@@ -1,0 +1,87 @@
+# ============================================================
+# SmartHome — MSPM0G3507 嵌入式项目 .gitignore
+# ============================================================
+
+# === Keil MDK / uVision ===
+*.uvguix.*
+*.uvgui.*
+*.uvoptx
+*.uvprojx
+*.scvd
+*.uv2
+*.dep
+JLinkLog.txt
+JLinkSettings.ini
+*.uvprojx.bak
+*.uvoptx.bak
+
+# Keil build outputs
+keil/Objects/
+keil/Listings/
+keil/*.map
+keil/*.build_log.htm
+keil/*.lnp
+keil/*.elf
+keil/*.axf
+keil/*.hex
+keil/*.bin
+keil/*.htm
+keil/*.dep
+keil/*.crf
+keil/*.d
+keil/*.o
+
+# Keil build viewer logs
+keil/keil-build-viewer.log
+keil/keil-build-viewer-record.txt
+
+# === TI Clang / CCS ===
+*.out
+*.map
+*.hex
+*.bin
+*.elf
+*.a
+*.lib
+*.d
+*.o
+*.obj
+*.pp
+
+# === Compiler / linker intermediate ===
+*.d
+*.o
+*.obj
+*.lst
+*.asm
+*.i
+*.ii
+
+# === General build artifacts ===
+build/
+out/
+Debug/
+Release/
+*.stackdump
+*.core
+
+# === IDE & Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+.DS_Store
+Thumbs.db
+*.orig
+*.patch
+
+# === OS files (Windows) ===
+Desktop.ini
+$RECYCLE.BIN/
+
+# === Package managers (if any added later) ===
+node_modules/
+package-lock.json
+yarn.lock
