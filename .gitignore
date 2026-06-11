@@ -3,10 +3,10 @@
 # ============================================================
 
 # === Keil MDK / uVision ===
+# Project file — MUST be tracked (contains project structure, file list, build config)
+# *.uvprojx is tracked explicitly; backups only are ignored
 *.uvguix.*
 *.uvgui.*
-*.uvoptx
-*.uvprojx
 *.scvd
 *.uv2
 *.dep
