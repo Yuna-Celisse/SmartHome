@@ -41,11 +41,11 @@ GPIO1.associatedPins.create(2);
 GPIO1.associatedPins[0].$name        = "HDC2010_EN";
 GPIO1.associatedPins[0].assignedPort = "PORTB";
 GPIO1.associatedPins[0].assignedPin  = "24";
-GPIO1.associatedPins[0].initialValue = "CLEAR";
+GPIO1.associatedPins[0].initialValue = "CLEARED";
 GPIO1.associatedPins[1].$name        = "DRV5055_EN";
 GPIO1.associatedPins[1].assignedPort = "PORTB";
 GPIO1.associatedPins[1].assignedPin  = "15";
-GPIO1.associatedPins[1].initialValue = "CLEAR";
+GPIO1.associatedPins[1].initialValue = "CLEARED";
 
 /* I2C1 Controller @ 400kHz on PB2(SCL) / PB3(SDA) */
 I2C1.$name                     = "I2C1";
@@ -58,11 +58,11 @@ I2C1.peripheral.sclPin.$assign = "PB2";
 
 /* ADC12_0: PA25 (CH2), single conversion, manual power down */
 ADC121.$name                = "ADC12_0";
-ADC121.peripheral.$assign   = "ADC0";
-ADC121.peripheral.adcPin2.$assign = "PA25";
 ADC121.adcMem0chansel       = "DL_ADC12_INPUT_CHAN_2";
+ADC121.sampleTime0          = "62.5ns";
 ADC121.repeatMode           = false;
 ADC121.powerDownMode        = "DL_ADC12_POWER_DOWN_MODE_MANUAL";
-ADC121.sampleTime0          = "62.5ns";
+ADC121.peripheral.$assign   = "ADC0";
+ADC121.peripheral.adcPin2.$assign = "PA25";
 
 SYSCTL.forceDefaultClkConfig = true;
