@@ -2,6 +2,9 @@
 # SmartHome — MSPM0G3507 嵌入式项目 .gitignore
 # ============================================================
 
+# === MSPM0 SDK submodule ===
+mspm0-sdk/docs/
+
 # === Keil MDK / uVision ===
 # Project file — MUST be tracked (contains project structure, file list, build config)
 # *.uvprojx is tracked explicitly; backups only are ignored
