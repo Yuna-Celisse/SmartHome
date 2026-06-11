@@ -20,6 +20,11 @@ int main(void)
     /* Initialize sensor hardware (I2C, ADC, GPIO enables) */
     Board_Sensor_Init();
 
+    /* Power-on LED indication: brief flash */
+    LED_ON();
+    delay_ms(200);
+    LED_OFF();
+
     /* Initialize each sensor */
     int hdc2010_ok = (HDC2010_Init() == 0);
     int tmp116_ok  = (TMP116_Init() == 0);
@@ -27,6 +32,8 @@ int main(void)
     int drv5055_ok = (DRV5055_Init() == 0);
 
     while (1) {
+        LED_TOGGLE();
+
         /* ---- HDC2010: Humidity + Temperature ---- */
         if (hdc2010_ok) {
             HDC2010_StartMeasurement();

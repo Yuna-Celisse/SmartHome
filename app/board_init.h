@@ -30,4 +30,12 @@ void Board_I2C_ReadReg(uint8_t slaveAddr, uint8_t reg, uint8_t *data, uint8_t le
 /* ADC helper */
 uint16_t Board_ADC_Read(void);
 
+/* ---- LED: PA0, active low (LOW = ON, HIGH = OFF) ---- */
+#define LED_PORT      GPIO_LED_PORT
+#define LED_PIN       GPIO_LED_USER_LED_PIN
+
+#define LED_ON()      DL_GPIO_clearPins(LED_PORT, LED_PIN)
+#define LED_OFF()     DL_GPIO_setPins(LED_PORT, LED_PIN)
+#define LED_TOGGLE()  DL_GPIO_togglePins(LED_PORT, LED_PIN)
+
 #endif /* BOARD_INIT_H */

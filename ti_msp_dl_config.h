@@ -76,6 +76,13 @@ extern "C" {
 #define CPUCLK_FREQ                                                     32000000
 
 
+/* Port definition for Pin Group GPIO_LED */
+#define GPIO_LED_PORT                                                   (GPIOA)
+
+/* Defines for USER_LED: GPIOA.0 with pinCMx 1 on package pin 33 */
+#define GPIO_LED_USER_LED_PIN                                  (DL_GPIO_PIN_0)
+#define GPIO_LED_USER_LED_IOMUX                                 (IOMUX_PINCM1)
+
 /* clang-format on */
 
 void SYSCFG_DL_init(void);
