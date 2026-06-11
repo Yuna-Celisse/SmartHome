@@ -1,0 +1,26 @@
+{
+    "KeilAssistant.Project.ExcludeList": [
+        "mspm0-sdk/**"
+    ],
+    "C_Cpp.default.compileCommands": "",
+    "C_Cpp.intelliSenseEngine": "enabled",
+    "C_Cpp.intelliSenseCacheSize": 64,
+    "C_Cpp.workspaceParsingPriority": "low",
+    "files.exclude": {
+        "**/mspm0-sdk/examples": true,
+        "**/mspm0-sdk/docs": true,
+        "**/mspm0-sdk/tools": true
+    },
+    "files.watcherExclude": {
+        "**/mspm0-sdk/**": true,
+        "**/keil/Objects/**": true,
+        "**/keil/Listings/**": true,
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true
+    },
+    "search.exclude": {
+        "**/mspm0-sdk/**": true,
+        "**/keil/Objects/**": true,
+        "**/keil/Listings/**": true
+    }
+}
