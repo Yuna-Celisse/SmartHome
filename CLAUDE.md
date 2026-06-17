@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-基于 TI MSPM0G3507 (Cortex-M0+ @ 32MHz) 的多传感器环境监测固件，运行在 LP-MSPM0G3507 LaunchPad + BOOSTXL-BASSENSORS BoosterPack 平台。通过 I2C1/ADC12 采集温湿度、照度、磁通量数据，UART0 输出调试信息。
+基于 TI MSPM0G3507 (Cortex-M0+ @ 32MHz) 的多传感器环境监测固件，运行在 LP-MSPM0G3507 LaunchPad + BOOSTXL-BASSENSORS BoosterPack 平台。通过 I2C1/ADC12 采集温湿度、照度、磁通量数据，三路 UART 覆盖调试、WiFi 和语音模块通信。
+
+**外设分配：**
+
+| UART | 硬件 | 引脚 | 用途 |
+|------|------|------|------|
+| UART0 | UART0 | PA10(TX)/PA11(RX) | XDS110 调试串口，中断驱动即时回显 |
+| UART1 | UART1 | PB6(TX)/PB7(RX) | ESP8266 WiFi 模块，AT 指令双向桥接 |
+| UART3 | UART3 | PB12(TX)/PB13(RX) | 语音模块，5 字节协议 (AA 55 [type] [cmd] FB) |
 
 ## 构建命令
 
@@ -35,15 +43,17 @@ CCS Theia 的调试配置由 GUI 生成，**不在仓库中维护** `.ccxml`、`
 
 ```
 smart_home.syscfg ──SysConfig──▶ ti_msp_dl_config.c/h   (外设初始化，自动生成，勿手动改)
-app/board_init.c/h               (板级抽象：I2C 读写、ADC 采集、UART0、LED 控制宏)
+app/board_init.c/h               (板级抽象：I2C/ADC/UART/LED，DL API 集中层)
 app/sensors/sensor_*.c/h         (传感器驱动：HDC2010/TMP116/OPT3001/DRV5055)
-app/main.c                       (主循环：1Hz 轮询全部传感器)
+app/voice_protocol.c/h           (语音模块 5 字节协议解析与命令分发)
+app/main.c                       (中断驱动 UART 桥接 + 1Hz 传感器轮询)
 ```
 
-- **`ti_msp_dl_config.c/h`**：SysConfig 生成，包含 `SYSCFG_DL_init()`（GPIO、I2C1@400kHz、ADC12、时钟树）及外设宏（`CPUCLK_FREQ`、`GPIO_LED_*`、`I2C1`、`ADC0` 等）。**禁止手动编辑**。
-- **`board_init`**：封装 I2C 读写（`Board_I2C_Write/Read/WriteReg/ReadReg`）、ADC 单次转换、UART0 轮询收发。所有 DL API 调用集中在此层。
+- **`ti_msp_dl_config.c/h`**：SysConfig 生成，包含 `SYSCFG_DL_init()`（GPIO、I2C1@400kHz、ADC12、时钟树）及外设宏（`CPUCLK_FREQ`、`GPIO_LED_*`、`I2C1`、`ADC0` 等）。UART 模块以代码生成关闭（`false`）注册，仅用于 pinmux 锁定。**禁止手动编辑**。
+- **`board_init`**：封装 I2C（`Board_I2C_Write/Read/WriteReg/ReadReg`）、ADC（`Board_ADC_Read`）、三路 UART 收发（`Board_UART_Write/WriteString/Read/RXAvailable`，首个参数 `UART_Regs *uart` 选择实例）、LED 控制宏（`LED_ON/OFF/TOGGLE`）。内部 `uart_periph_init()` 消除三路 UART 初始化代码重复。所有 DL API 调用集中在此层。
 - **`sensors/`**：每个传感器一个 `.c/.h` 对，依赖 `board_init.h` 进行 I2C/ADC 访问，`Init()` 返回 `int`（0 = 成功、-1 = 失败），其余接口返回 `float` 物理量或状态码。
-- **`main.c`**：`SYSCFG_DL_init()` → `Board_Sensor_Init()` → 各传感器 `Init()` → 主循环 `while(1)` @1Hz。
+- **`voice_protocol`**：5 字节协议解析（`AA 55 [type] [cmd] FB`），`Voice_Process_Byte()` 逐字节组包，`Voice_Protocol_Init()` 上电广播。ALARM 命令 (0x26) 触发 `LED_TOGGLE()` 并回复应答包。
+- **`main.c`**：`SYSCFG_DL_init()` → `Board_Sensor_Init()` → 三路 UART Init + NVIC → `Voice_Protocol_Init()` → 主循环 `while(1)` @1Hz。三路 UART 全部中断驱动：UART0 本地回显 + 透传 UART1，UART1 响应转发 UART0，UART3 协议解析 + 转发 UART0。主循环仅负责传感器轮询，LED 由语音模块 ALARM 命令驱动。
 
 ## 第三方代码边界
 

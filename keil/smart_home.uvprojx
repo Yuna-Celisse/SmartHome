@@ -459,6 +459,16 @@
               <FileType>5</FileType>
               <FilePath>../app/sensors/sensor_drv5055.h</FilePath>
             </File>
+            <File>
+              <FileName>voice_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/voice_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>voice_protocol.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/voice_protocol.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

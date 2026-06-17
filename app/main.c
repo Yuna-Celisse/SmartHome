@@ -4,6 +4,7 @@
 #include "sensors/sensor_tmp116.h"
 #include "sensors/sensor_opt3001.h"
 #include "sensors/sensor_drv5055.h"
+#include "voice_protocol.h"
 
 /**
  * @brief  UART0 interrupt handler — local echo + forward to ESP8266.
@@ -70,6 +71,41 @@ void UART1_IRQHandler(void)
     }
 }
 
+/**
+ * @brief  UART3 interrupt handler — voice-module protocol processing.
+ *
+ * Fires on every byte received from the voice module on UART3 (PB12/PB13).
+ * Each byte is:
+ *   1. Fed into Voice_Process_Byte() for 5-byte protocol parsing.
+ *   2. Forwarded to UART0 (XDS110 debug console) so protocol traffic
+ *      is visible in the serial terminal for debugging.
+ *
+ * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
+ */
+void UART3_IRQHandler(void)
+{
+    switch (DL_UART_Main_getPendingInterrupt(UART_VOICE_INST)) {
+    case DL_UART_MAIN_IIDX_RX:
+        while (!DL_UART_Main_isRXFIFOEmpty(UART_VOICE_INST)) {
+            uint8_t ch = DL_UART_Main_receiveData(UART_VOICE_INST);
+            /**
+             * Parse the received byte through the voice-module
+             * 5-byte protocol handler (AA 55 [type] [cmd] FB).
+             */
+            Voice_Process_Byte(ch);
+            /**
+             * Forward raw bytes to UART0 for debug visibility.
+             * Protocol bytes will appear in the serial terminal
+             * alongside other UART traffic.
+             */
+            DL_UART_Main_transmitDataBlocking(UART0, ch);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 /* Simple busy-wait delay (approx. ms at 32MHz CPUCLK) */
 static void delay_ms(uint32_t ms)
 {
@@ -111,6 +147,20 @@ int main(void)
     Board_UART1_Init(UART_ESP_BAUD);
     NVIC_EnableIRQ(UART1_INT_IRQn);
 
+    /**
+     * Initialize UART3 (Voice module, PB12/PB13).
+     * Receives 5-byte protocol packets (AA 55 [type] [cmd] FB)
+     * and dispatches commands via Voice_Process_Byte().
+     */
+    Board_UART3_Init(UART_VOICE_BAUD);
+    NVIC_EnableIRQ(UART3_INT_IRQn);
+
+    /**
+     * Send the init broadcast packet on the voice UART to notify
+     * any connected voice modules that the MCU is ready.
+     */
+    Voice_Protocol_Init();
+
     /* Power-on LED indication: brief flash */
     LED_ON();
     delay_ms(200);
@@ -123,11 +173,10 @@ int main(void)
     int drv5055_ok = (DRV5055_Init() == 0);
 
     while (1) {
-        LED_TOGGLE();
-
         /**
-         * UART0 echo is handled entirely by UART0_IRQHandler()
-         * in the background — no polling needed in the main loop.
+         * UART0 echo + bridge and UART3 voice protocol are handled
+         * entirely by interrupt service routines in the background —
+         * no polling needed in the main loop.
          */
 
         /* ---- HDC2010: Humidity + Temperature ---- */

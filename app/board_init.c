@@ -251,6 +251,47 @@ void Board_UART1_Init(uint32_t baudRate)
 }
 
 /**
+ * @brief  Initialize UART3 (Voice module) on PB12(TX)/PB13(RX).
+ *
+ * Configures GPIO pinmux, then delegates peripheral configuration to
+ * uart_periph_init(). Enables the UART RX interrupt at the peripheral
+ * level so that received protocol packets are processed in real time
+ * via UART3_IRQHandler().
+ *
+ * The caller must separately call NVIC_EnableIRQ(UART3_INT_IRQn)
+ * after this function returns.
+ *
+ * @param[in] baudRate  Desired baud rate (e.g. 115200).
+ */
+void Board_UART3_Init(uint32_t baudRate)
+{
+    /**
+     * Configure PB12 as UART3 TX (peripheral output).
+     * PB12 = IOMUX PINCM29, alternate function UART3_TX.
+     */
+    DL_GPIO_initPeripheralOutputFunction(UART_VOICE_IOMUX_TX,
+        UART_VOICE_IOMUX_TX_FUNC);
+
+    /**
+     * Configure PB13 as UART3 RX (peripheral input).
+     * PB13 = IOMUX PINCM30, alternate function UART3_RX.
+     */
+    DL_GPIO_initPeripheralInputFunction(UART_VOICE_IOMUX_RX,
+        UART_VOICE_IOMUX_RX_FUNC);
+
+    uart_periph_init(UART_VOICE_INST, baudRate);
+
+    /**
+     * Enable UART RX interrupt at the peripheral level for
+     * real-time voice-module protocol processing. The NVIC must
+     * be separately enabled by the caller via
+     * NVIC_EnableIRQ(UART3_INT_IRQn).
+     */
+    DL_UART_Main_enableInterrupt(UART_VOICE_INST,
+        DL_UART_MAIN_INTERRUPT_RX);
+}
+
+/**
  * @brief  Check whether a byte is available in the UART RX FIFO.
  *
  * Returns immediately — does not block. For polling-based RX,

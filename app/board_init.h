@@ -73,6 +73,16 @@ uint16_t Board_ADC_Read(void);
 #define UART_ESP_IOMUX_RX           (IOMUX_PINCM24)
 #define UART_ESP_IOMUX_RX_FUNC      IOMUX_PINCM24_PF_UART1_RX
 
+/* ---- UART3: Voice module, PB12(TX) / PB13(RX) ---- */
+#define UART_VOICE_INST             UART3
+#define UART_VOICE_BAUD             115200
+
+#define UART_VOICE_IOMUX_TX         (IOMUX_PINCM29)
+#define UART_VOICE_IOMUX_TX_FUNC    IOMUX_PINCM29_PF_UART3_TX
+
+#define UART_VOICE_IOMUX_RX         (IOMUX_PINCM30)
+#define UART_VOICE_IOMUX_RX_FUNC    IOMUX_PINCM30_PF_UART3_RX
+
 /**
  * @brief  Initialize UART0 (XDS110 debug) with 8N1, FIFOs, and RX interrupt.
  *
@@ -96,6 +106,18 @@ void Board_UART0_Init(uint32_t baudRate);
  * @param[in] baudRate  Desired baud rate (e.g. 115200).
  */
 void Board_UART1_Init(uint32_t baudRate);
+
+/**
+ * @brief  Initialize UART3 (Voice module) with 8N1, FIFOs, and RX interrupt.
+ *
+ * Configures PB12(TX)/PB13(RX) GPIO pinmux, resets and powers on the
+ * UART peripheral, applies BUSCLK@32MHz, 8N1 framing, enables FIFOs,
+ * and enables the UART RX interrupt at the peripheral level.
+ * Caller must separately invoke NVIC_EnableIRQ(UART3_INT_IRQn).
+ *
+ * @param[in] baudRate  Desired baud rate (e.g. 115200).
+ */
+void Board_UART3_Init(uint32_t baudRate);
 
 /**
  * @brief  Check if at least one byte is available in the UART RX FIFO.
