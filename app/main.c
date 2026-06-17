@@ -6,22 +6,69 @@
 #include "sensors/sensor_drv5055.h"
 
 /**
- * UART RX buffer for echoing received lines back to the terminal.
+ * @brief  UART0 interrupt handler — local echo + forward to ESP8266.
  *
- * All accesses are from the main polling loop (no ISR concurrency).
- * Declared volatile to prevent compiler optimization so the debugger
- * can inspect buffer contents at any breakpoint.
+ * Fires on every received byte (RX FIFO threshold = 1 entry).
+ * Each byte is:
+ *   1. Echoed back to UART0 (local echo so the user sees what they type).
+ *   2. Forwarded to UART1 (ESP8266) for AT command processing.
+ *
+ * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
+ *
+ * @note  Blocking TX on UART1 in ISR context is safe because TX at
+ *        115200 baud keeps pace with RX — the TX FIFO is never full
+ *        during normal operation.
  */
-#define UART_RX_BUF_SIZE    64
-volatile uint8_t g_uart_rx_buf[UART_RX_BUF_SIZE];
-volatile uint8_t g_uart_rx_len = 0;
+void UART0_IRQHandler(void)
+{
+    switch (DL_UART_Main_getPendingInterrupt(UART0)) {
+    case DL_UART_MAIN_IIDX_RX:
+        while (!DL_UART_Main_isRXFIFOEmpty(UART0)) {
+            uint8_t ch = DL_UART_Main_receiveData(UART0);
+            /**
+             * Local echo on UART0 so the user sees typed characters
+             * immediately in the serial terminal.
+             */
+            DL_UART_Main_transmitDataBlocking(UART0, ch);
+            /**
+             * Forward the same byte to UART1 (ESP8266) for AT command
+             * processing. The ESP8266 receives the command character
+             * by character, matching standard UART AT firmware behavior.
+             */
+            DL_UART_Main_transmitDataBlocking(UART1, ch);
+        }
+        break;
+    default:
+        break;
+    }
+}
 
 /**
- * Set to 1 when a complete line (terminated by '\n') has been received.
- * Intended for debugger inspection and future async processing — not
- * currently consumed by firmware logic.
+ * @brief  UART1 interrupt handler — forward ESP8266 responses to UART0.
+ *
+ * Fires on every byte received from the ESP8266 on UART1.
+ * Each byte is forwarded to UART0 (XDS110 debug console) so the user
+ * can see AT command responses in the serial terminal.
+ *
+ * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
-volatile uint8_t g_uart_rx_flag = 0;
+void UART1_IRQHandler(void)
+{
+    switch (DL_UART_Main_getPendingInterrupt(UART1)) {
+    case DL_UART_MAIN_IIDX_RX:
+        while (!DL_UART_Main_isRXFIFOEmpty(UART1)) {
+            uint8_t ch = DL_UART_Main_receiveData(UART1);
+            /**
+             * Forward ESP8266 response byte to UART0 for display
+             * in the debug serial terminal.
+             */
+            DL_UART_Main_transmitDataBlocking(UART0, ch);
+        }
+        break;
+    default:
+        break;
+    }
+}
 
 /* Simple busy-wait delay (approx. ms at 32MHz CPUCLK) */
 static void delay_ms(uint32_t ms)
@@ -38,12 +85,31 @@ int main(void)
     /* Initialize sensor hardware (I2C, ADC, GPIO enables) */
     Board_Sensor_Init();
 
-    /* Initialize UART0 (PA10/PA11, XDS110 back-channel) */
-    Board_UART_Init(UART_TEST_BAUD);
+    /**
+     * Initialize UART0 (PA10/PA11, XDS110 back-channel).
+     * Board_UART0_Init() enables the UART RX interrupt at the
+     * peripheral level; NVIC_EnableIRQ() unmasks it at the core level.
+     * Order matters: peripheral interrupt must be unmasked BEFORE the
+     * NVIC, or an edge-triggered IRQ could be missed.
+     */
+    Board_UART0_Init(UART_DEBUG_BAUD);
+    NVIC_EnableIRQ(UART0_INT_IRQn);
 
     /* Send startup banner so PC terminal can verify connection */
-    Board_UART_WriteString("\r\n=== SmartHome UART0 Test ===\r\n");
-    Board_UART_WriteString("Send AT commands to test serial.\r\n");
+    Board_UART_WriteString(UART_DEBUG_INST,
+        "\r\n=== SmartHome UART0<->UART1 Bridge ===\r\n");
+    Board_UART_WriteString(UART_DEBUG_INST,
+        "Type AT commands -> ESP8266, responses -> terminal.\r\n");
+
+    /**
+     * Initialize UART1 (ESP8266 WiFi module, PB6/PB7).
+     * Board_UART1_Init() enables the UART RX interrupt at the
+     * peripheral level; NVIC_EnableIRQ() unmasks it at the core.
+     * Together with UART0, this forms a bidirectional bridge:
+     *   UART0 (terminal) ←→ UART1 (ESP8266)
+     */
+    Board_UART1_Init(UART_ESP_BAUD);
+    NVIC_EnableIRQ(UART1_INT_IRQn);
 
     /* Power-on LED indication: brief flash */
     LED_ON();
@@ -59,26 +125,10 @@ int main(void)
     while (1) {
         LED_TOGGLE();
 
-        /* ---- UART RX: buffer until newline, echo complete line ---- */
-        while (Board_UART_RXAvailable()) {
-            uint8_t ch = Board_UART_Read();
-
-            /**
-             * Buffer incoming byte if space remains (reserve last byte
-             * for null terminator). Excess bytes are intentionally
-             * discarded — this is a debug echo, not a reliable transport.
-             */
-            if (g_uart_rx_len < UART_RX_BUF_SIZE - 1) {
-                g_uart_rx_buf[g_uart_rx_len++] = ch;
-            }
-
-            if (ch == '\n') {
-                g_uart_rx_buf[g_uart_rx_len] = '\0';
-                g_uart_rx_flag = 1;
-                Board_UART_WriteString((const char *)g_uart_rx_buf);
-                g_uart_rx_len = 0;
-            }
-        }
+        /**
+         * UART0 echo is handled entirely by UART0_IRQHandler()
+         * in the background — no polling needed in the main loop.
+         */
 
         /* ---- HDC2010: Humidity + Temperature ---- */
         if (hdc2010_ok) {
