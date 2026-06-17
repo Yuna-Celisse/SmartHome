@@ -96,39 +96,30 @@ void Board_I2C_ReadReg(uint8_t slaveAddr, uint8_t reg, uint8_t *data, uint8_t le
     }
 }
 
-/* ---- UART0 helpers ---- */
+/* ---- UART helpers ---- */
 
 /**
- * @brief  Initialize UART0 on PA10 (TX) / PA11 (RX) with 8N1, FIFO enabled.
+ * @brief  Shared UART peripheral initialization sequence.
  *
- * Configures GPIO IOMUX, resets and powers on the UART peripheral, sets
- * BUSCLK clock source, applies 8N1 framing, and enables RX/TX FIFOs.
- * The baud rate is auto-calculated from @p baudRate and CPUCLK_FREQ.
+ * Resets, powers on, and configures a UART peripheral with BUSCLK@32MHz,
+ * 8N1 framing, FIFOs enabled, and RX FIFO threshold = 1 entry.
+ * The caller is responsible for GPIO pinmux configuration and any
+ * interrupt enables.
  *
+ * This helper eliminates code duplication between UART0 (XDS110 debug)
+ * and UART1 (ESP8266) initialization.
+ *
+ * @param[in] uart      UART peripheral instance (e.g. UART0, UART1).
  * @param[in] baudRate  Desired baud rate (e.g. 115200).
  */
-void Board_UART_Init(uint32_t baudRate)
+static void uart_periph_init(UART_Regs *uart, uint32_t baudRate)
 {
     /**
-     * Configure PA10 as UART0 TX (peripheral output).
-     * PA10 = IOMUX PINCM21, alternate function UART0_TX.
-     */
-    DL_GPIO_initPeripheralOutputFunction(GPIO_UART_IOMUX_TX,
-        GPIO_UART_IOMUX_TX_FUNC);
-
-    /**
-     * Configure PA11 as UART0 RX (peripheral input).
-     * PA11 = IOMUX PINCM22, alternate function UART0_RX.
-     */
-    DL_GPIO_initPeripheralInputFunction(GPIO_UART_IOMUX_RX,
-        GPIO_UART_IOMUX_RX_FUNC);
-
-    /**
-     * Reset UART0 registers to defaults, then power on the peripheral.
+     * Reset UART registers to defaults, then power on the peripheral.
      * Both operations are idempotent and return void.
      */
-    DL_UART_Main_reset(UART_TEST_INST);
-    DL_UART_Main_enablePower(UART_TEST_INST);
+    DL_UART_Main_reset(uart);
+    DL_UART_Main_enablePower(uart);
 
     /**
      * Clock source: BUSCLK @ 32 MHz with divide ratio 1.
@@ -138,11 +129,12 @@ void Board_UART_Init(uint32_t baudRate)
         .clockSel    = DL_UART_MAIN_CLOCK_BUSCLK,
         .divideRatio = DL_UART_MAIN_CLOCK_DIVIDE_RATIO_1
     };
-    DL_UART_Main_setClockConfig(UART_TEST_INST, &clockCfg);
+    DL_UART_Main_setClockConfig(uart, &clockCfg);
 
     /**
-     * Base UART configuration: normal mode, full-duplex, 8N1, no flow control.
-     * These settings match the typical terminal / serial monitor defaults.
+     * Base UART configuration: normal mode, full-duplex, 8N1,
+     * no flow control. These settings match typical terminal
+     * defaults and ESP8266 AT command requirements.
      */
     static const DL_UART_Main_Config uartCfg = {
         .mode        = DL_UART_MAIN_MODE_NORMAL,
@@ -152,62 +144,149 @@ void Board_UART_Init(uint32_t baudRate)
         .wordLength  = DL_UART_MAIN_WORD_LENGTH_8_BITS,
         .stopBits    = DL_UART_MAIN_STOP_BITS_ONE
     };
-    DL_UART_Main_init(UART_TEST_INST, &uartCfg);
+    DL_UART_Main_init(uart, &uartCfg);
 
     /**
-     * Set baud rate. The DriverLib auto-calculates the oversampling
+     * Set baud rate. DriverLib auto-calculates the oversampling
      * ratio and divisor from CPUCLK_FREQ and the requested baud rate.
      * If the exact rate is not achievable, the nearest valid rate is used.
      */
-    DL_UART_Main_configBaudRate(UART_TEST_INST, CPUCLK_FREQ, baudRate);
+    DL_UART_Main_configBaudRate(uart, CPUCLK_FREQ, baudRate);
 
     /**
      * Enable RX and TX FIFOs. RX FIFO threshold is set to 1 entry
      * so that Board_UART_RXAvailable() returns true as soon as a
-     * single byte arrives.
+     * single byte arrives, and to trigger the UART RX interrupt
+     * on every received byte for instant echo.
      */
-    DL_UART_Main_enableFIFOs(UART_TEST_INST);
-    DL_UART_Main_setRXFIFOThreshold(UART_TEST_INST,
+    DL_UART_Main_enableFIFOs(uart);
+    DL_UART_Main_setRXFIFOThreshold(uart,
         DL_UART_MAIN_RX_FIFO_LEVEL_ONE_ENTRY);
 
     /**
-     * Enable the UART peripheral. After this call, the UART is
-     * ready for TX/RX via the blocking read/write helpers.
+     * Enable the UART peripheral. After this call, TX/RX operations
+     * are ready via blocking read/write helpers.
      */
-    DL_UART_Main_enable(UART_TEST_INST);
+    DL_UART_Main_enable(uart);
+}
+
+/**
+ * @brief  Initialize UART0 (XDS110 debug) on PA10(TX)/PA11(RX).
+ *
+ * Configures GPIO pinmux, then delegates peripheral configuration
+ * to uart_periph_init(). Also enables the UART RX interrupt at the
+ * peripheral level so that received bytes are echoed immediately
+ * via UART0_IRQHandler().
+ *
+ * The caller must separately call NVIC_EnableIRQ(UART0_INT_IRQn)
+ * after this function returns.
+ *
+ * @param[in] baudRate  Desired baud rate (e.g. 115200).
+ */
+void Board_UART0_Init(uint32_t baudRate)
+{
+    /**
+     * Configure PA10 as UART0 TX (peripheral output).
+     * PA10 = IOMUX PINCM21, alternate function UART0_TX.
+     */
+    DL_GPIO_initPeripheralOutputFunction(UART_DEBUG_IOMUX_TX,
+        UART_DEBUG_IOMUX_TX_FUNC);
+
+    /**
+     * Configure PA11 as UART0 RX (peripheral input).
+     * PA11 = IOMUX PINCM22, alternate function UART0_RX.
+     */
+    DL_GPIO_initPeripheralInputFunction(UART_DEBUG_IOMUX_RX,
+        UART_DEBUG_IOMUX_RX_FUNC);
+
+    uart_periph_init(UART_DEBUG_INST, baudRate);
+
+    /**
+     * Enable UART RX interrupt at the peripheral level.
+     * The NVIC must be separately enabled by the caller via
+     * NVIC_EnableIRQ(UART0_INT_IRQn) to start receiving interrupts.
+     */
+    DL_UART_Main_enableInterrupt(UART_DEBUG_INST,
+        DL_UART_MAIN_INTERRUPT_RX);
+}
+
+/**
+ * @brief  Initialize UART1 (ESP8266 WiFi) on PB6(TX)/PB7(RX).
+ *
+ * Configures GPIO pinmux, then delegates peripheral configuration to
+ * uart_periph_init(). Enables the UART RX interrupt at the peripheral
+ * level so that ESP8266 responses are forwarded to UART0 in real time
+ * via UART1_IRQHandler().
+ *
+ * The caller must separately call NVIC_EnableIRQ(UART1_INT_IRQn)
+ * after this function returns.
+ *
+ * @param[in] baudRate  Desired baud rate (e.g. 115200).
+ */
+void Board_UART1_Init(uint32_t baudRate)
+{
+    /**
+     * Configure PB6 as UART1 TX (peripheral output).
+     * PB6 = IOMUX PINCM23, alternate function UART1_TX.
+     */
+    DL_GPIO_initPeripheralOutputFunction(UART_ESP_IOMUX_TX,
+        UART_ESP_IOMUX_TX_FUNC);
+
+    /**
+     * Configure PB7 as UART1 RX (peripheral input).
+     * PB7 = IOMUX PINCM24, alternate function UART1_RX.
+     */
+    DL_GPIO_initPeripheralInputFunction(UART_ESP_IOMUX_RX,
+        UART_ESP_IOMUX_RX_FUNC);
+
+    uart_periph_init(UART_ESP_INST, baudRate);
+
+    /**
+     * Enable UART RX interrupt at the peripheral level for
+     * bidirectional bridge forwarding. The NVIC must be separately
+     * enabled by the caller via NVIC_EnableIRQ(UART1_INT_IRQn).
+     */
+    DL_UART_Main_enableInterrupt(UART_ESP_INST,
+        DL_UART_MAIN_INTERRUPT_RX);
 }
 
 /**
  * @brief  Check whether a byte is available in the UART RX FIFO.
  *
+ * Returns immediately — does not block. For polling-based RX,
+ * call this before Board_UART_Read() to avoid blocking.
+ *
+ * @param[in] uart  UART peripheral instance (e.g. UART0, UART1).
  * @return true if at least one byte is ready to read, false otherwise.
  */
-bool Board_UART_RXAvailable(void)
+bool Board_UART_RXAvailable(const UART_Regs *uart)
 {
-    return !DL_UART_isRXFIFOEmpty(UART_TEST_INST);
+    return !DL_UART_isRXFIFOEmpty(uart);
 }
 
 /**
  * @brief  Read one byte from the UART RX FIFO (blocking if empty).
  *
- * This call blocks until a byte is available. Call
- * Board_UART_RXAvailable() first to avoid blocking.
+ * This call blocks until a byte is available. For non-blocking
+ * operation, call Board_UART_RXAvailable() first to check.
  *
+ * @param[in] uart  UART peripheral instance (e.g. UART0, UART1).
  * @return The received byte.
  */
-uint8_t Board_UART_Read(void)
+uint8_t Board_UART_Read(const UART_Regs *uart)
 {
-    return DL_UART_receiveDataBlocking(UART_TEST_INST);
+    return DL_UART_receiveDataBlocking(uart);
 }
 
 /**
  * @brief  Transmit one byte over UART (blocking until TX FIFO has space).
  *
+ * @param[in] uart  UART peripheral instance (e.g. UART0, UART1).
  * @param[in] data  Byte to transmit.
  */
-void Board_UART_Write(uint8_t data)
+void Board_UART_Write(UART_Regs *uart, uint8_t data)
 {
-    DL_UART_transmitDataBlocking(UART_TEST_INST, data);
+    DL_UART_transmitDataBlocking(uart, data);
 }
 
 /**
@@ -216,12 +295,13 @@ void Board_UART_Write(uint8_t data)
  * Each character is cast to uint8_t for the blocking TX call.
  * No line ending is appended — the caller must include \r\n if needed.
  *
- * @param[in] str  Null-terminated string to transmit.
+ * @param[in] uart  UART peripheral instance (e.g. UART0, UART1).
+ * @param[in] str   Null-terminated string to transmit.
  */
-void Board_UART_WriteString(const char *str)
+void Board_UART_WriteString(UART_Regs *uart, const char *str)
 {
     while (*str) {
-        Board_UART_Write((uint8_t)*str++);
+        Board_UART_Write(uart, (uint8_t)*str++);
     }
 }
 
