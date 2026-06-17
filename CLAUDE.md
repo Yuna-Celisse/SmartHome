@@ -20,6 +20,17 @@ cd ticlang && make
 
 构建入口为 `ticlang/makefile`（TI Arm Clang 3.2.0+，`-mcpu=cortex-m0plus -O2`）或 Keil MDK 工程文件。两种构建都依赖 SysConfig 从 `smart_home.syscfg` 生成 `ti_msp_dl_config.c/h`。
 
+### CCS 调试
+
+CCS Theia 的调试配置由 GUI 生成，**不在仓库中维护** `.ccxml`、`.gel`、`.launch` 或 `.theia/launch.json`。
+
+1. CCS Theia → Project → Import CCS Project → 选择 `ticlang/` 目录
+2. 右键工程 → New → Target Configuration File → XDS110 + MSPM0G3507 → 保存为 `MSPM0G3507.ccxml`
+3. CCS 自动根据 `ticlang/smart_home.projectspec` 解析构建选项和调试参数
+4. F5 启动调试
+
+> 手工创建的 `.ccxml` 无法被 CCS Theia 识别，目标配置文件必须通过 CCS GUI 生成。
+
 ## 架构层次
 
 ```
