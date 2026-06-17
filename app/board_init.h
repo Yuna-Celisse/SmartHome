@@ -1,14 +1,29 @@
+/******************************************************************************
+ * @file board_init.h
+ *
+ * @par dependencies
+ *      - ti_msp_dl_config.h (SysConfig-generated peripheral macros)
+ *
+ * @author Yuna-Celisse
+ *
+ * @brief Board-level macros and function declarations for I2C, ADC, UART,
+ *        and LED peripherals on the BOOSTXL-BASSENSORS sensor board.
+ *
+ * Hardware initialization (GPIO, I2C, ADC12) is handled by SysConfig.
+ * This header provides:
+ *  - Peripheral instance and pin mapping macros
+ *  - Runtime read/write helper function declarations
+ *  - LED control macros (PA0, active low)
+ *
+ * @version V1.0 2026-6-17
+ *
+ * @note 1 tab == 4 spaces!
+ *****************************************************************************/
+
 #ifndef BOARD_INIT_H
 #define BOARD_INIT_H
 
 #include "ti_msp_dl_config.h"
-
-/*
- * BOOSTXL-BASSENSORS board support.
- *
- * Hardware initialization (GPIO, I2C, ADC12) is handled by SysConfig.
- * This module provides runtime read/write helpers for the sensor drivers.
- */
 
 /* I2C1 bus — shared by HDC2010, TMP116, OPT3001 */
 #define SENSOR_I2C                              I2C1
@@ -29,6 +44,46 @@ void Board_I2C_ReadReg(uint8_t slaveAddr, uint8_t reg, uint8_t *data, uint8_t le
 
 /* ADC helper */
 uint16_t Board_ADC_Read(void);
+
+/* ---- UART0: PA10(TX) / PA11(RX), XDS110 back-channel ---- */
+#define UART_TEST_INST              UART0
+#define UART_TEST_BAUD              115200
+
+#define GPIO_UART_IOMUX_TX          (IOMUX_PINCM21)
+#define GPIO_UART_IOMUX_TX_FUNC     IOMUX_PINCM21_PF_UART0_TX
+
+#define GPIO_UART_IOMUX_RX          (IOMUX_PINCM22)
+#define GPIO_UART_IOMUX_RX_FUNC     IOMUX_PINCM22_PF_UART0_RX
+
+/**
+ * @brief  Initialize UART0 with 8N1 framing, FIFOs, and target baud rate.
+ * @param[in] baudRate  Desired baud rate (e.g. 115200).
+ */
+void Board_UART_Init(uint32_t baudRate);
+
+/**
+ * @brief  Check if at least one byte is available in the UART RX FIFO.
+ * @return true if data is ready to read, false otherwise.
+ */
+bool Board_UART_RXAvailable(void);
+
+/**
+ * @brief  Read one byte from UART RX (blocks until data arrives).
+ * @return The received byte.
+ */
+uint8_t Board_UART_Read(void);
+
+/**
+ * @brief  Transmit one byte over UART (blocks until TX FIFO has space).
+ * @param[in] data  Byte to transmit.
+ */
+void Board_UART_Write(uint8_t data);
+
+/**
+ * @brief  Transmit a null-terminated string over UART byte by byte.
+ * @param[in] str  Null-terminated string to transmit.
+ */
+void Board_UART_WriteString(const char *str);
 
 /* ---- LED: PA0, active low (LOW = ON, HIGH = OFF) ---- */
 #define LED_PORT      GPIO_LED_PORT
