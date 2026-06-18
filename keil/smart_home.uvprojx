@@ -430,14 +430,24 @@
               <FilePath>../app/sensors/sensor_hdc2010.h</FilePath>
             </File>
             <File>
-              <FileName>sensor_tmp116.c</FileName>
+              <FileName>sensor_tmp007.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../app/sensors/sensor_tmp116.c</FilePath>
+              <FilePath>../app/sensors/sensor_tmp007.c</FilePath>
             </File>
             <File>
-              <FileName>sensor_tmp116.h</FileName>
+              <FileName>sensor_tmp007.h</FileName>
               <FileType>5</FileType>
-              <FilePath>../app/sensors/sensor_tmp116.h</FilePath>
+              <FilePath>../app/sensors/sensor_tmp007.h</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_bmi160.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/sensors/sensor_bmi160.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_bmi160.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/sensors/sensor_bmi160.h</FilePath>
             </File>
             <File>
               <FileName>sensor_opt3001.c</FileName>

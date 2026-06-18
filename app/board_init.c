@@ -30,34 +30,143 @@ void Board_Sensor_Init(void)
     delay_cycles(32000);
 }
 
+/**
+ * @brief  Initialize I2C1 on PB2(SCL) / PB3(SDA) at 400kHz.
+ *
+ * The SysConfig-generated ti_msp_dl_config.c does not include I2C
+ * initialization (the I2C module is configured in the .syscfg but
+ * the init function call is absent from the generated SYSCFG_DL_init).
+ * This function fills that gap by performing the full I2C1 bring-up
+ * sequence: pinmux, reset, power, clock config, timer period for
+ * 400kHz, and controller enable.
+ */
+void Board_I2C_Init(void)
+{
+    /* ---- GPIO pinmux: PB2 = I2C1 SCL, PB3 = I2C1 SDA ---- */
+    DL_GPIO_initPeripheralInputFunctionFeatures(
+        IOMUX_PINCM15, IOMUX_PINCM15_PF_I2C1_SCL,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_NONE,
+        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initPeripheralInputFunctionFeatures(
+        IOMUX_PINCM16, IOMUX_PINCM16_PF_I2C1_SDA,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_NONE,
+        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_enableHiZ(IOMUX_PINCM15);
+    DL_GPIO_enableHiZ(IOMUX_PINCM16);
+
+    /* ---- Reset and power on the I2C1 peripheral ---- */
+    DL_I2C_reset(SENSOR_I2C);
+    DL_I2C_enablePower(SENSOR_I2C);
+
+    /* ---- Clock: BUSCLK @ 32 MHz, divide-by-1 ---- */
+    static const DL_I2C_ClockConfig i2cClkCfg = {
+        .clockSel    = DL_I2C_CLOCK_BUSCLK,
+        .divideRatio = DL_I2C_CLOCK_DIVIDE_1
+    };
+    DL_I2C_setClockConfig(SENSOR_I2C, &i2cClkCfg);
+
+    /* ---- Analog glitch filter (kept disabled) ---- */
+    DL_I2C_disableAnalogGlitchFilter(SENSOR_I2C);
+
+    /* ---- Controller mode, 100 kHz bus speed ---- */
+    DL_I2C_resetControllerTransfer(SENSOR_I2C);
+    DL_I2C_setTimerPeriod(SENSOR_I2C, 31);
+    DL_I2C_setControllerTXFIFOThreshold(SENSOR_I2C,
+        DL_I2C_TX_FIFO_LEVEL_BYTES_1);
+    DL_I2C_setControllerRXFIFOThreshold(SENSOR_I2C,
+        DL_I2C_RX_FIFO_LEVEL_BYTES_1);
+    DL_I2C_disableControllerClockStretching(SENSOR_I2C);
+
+    /* Enable the I2C controller */
+    DL_I2C_enableController(SENSOR_I2C);
+}
+
+/**
+ * @brief  Drive sensor enable pins low to power on BoosterPack sensors.
+ *
+ * The BOOSTXL-BASSENSORS uses active-low load switches (TPS22918) to
+ * control power to each sensor. Driving the EN pin low turns on the
+ * LDO; floating or high leaves the sensor unpowered.
+ *
+ * - HDC2010_EN: PB24, IOMUX_PINCM52
+ * - DRV5055_EN: PB15, IOMUX_PINCM32
+ *
+ * Both pins are configured as digital outputs driven LOW, then a
+ * 10ms delay allows LDO ramp and sensor startup.
+ */
+void Board_Sensor_Enable(void)
+{
+    /**
+     * BOOSTXL-BASSENSORS sensor power enables (per TI data_sensor_aggregator):
+     *   HDC_V  → PB24 (PINCM52)  active LOW
+     *   DRV_V  → PA22 (PINCM47)  active LOW
+     *   OPT_V  → PA24 (PINCM54)  active HIGH (!)
+     */
+
+    /* HDC2010: PB24, drive LOW to power on */
+    DL_GPIO_initDigitalOutput(IOMUX_PINCM52);
+    DL_GPIO_clearPins(GPIOB, DL_GPIO_PIN_24);
+    DL_GPIO_enableOutput(GPIOB, DL_GPIO_PIN_24);
+
+    /* DRV5055: PA22, drive LOW to power on */
+    DL_GPIO_initDigitalOutput(IOMUX_PINCM47);
+    DL_GPIO_clearPins(GPIOA, DL_GPIO_PIN_22);
+    DL_GPIO_enableOutput(GPIOA, DL_GPIO_PIN_22);
+
+    /* OPT3001: PA24, drive HIGH to power on */
+    DL_GPIO_initDigitalOutput(IOMUX_PINCM54);
+    DL_GPIO_setPins(GPIOA, DL_GPIO_PIN_24);
+    DL_GPIO_enableOutput(GPIOA, DL_GPIO_PIN_24);
+
+    /* Allow LDOs to ramp and sensors to power up (~10ms) */
+    delay_cycles(320000);
+}
+
 /* ---- I2C helpers ---- */
+
+#define I2C_TIMEOUT_CYCLES  (320000U)  /* ~10ms at 32MHz */
 
 void Board_I2C_Write(uint8_t slaveAddr, const uint8_t *data, uint8_t len)
 {
-    while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
-
     DL_I2C_fillControllerTXFIFO(SENSOR_I2C, data, len);
+
+    /* Wait for controller to be idle before starting */
+    uint32_t timeout = I2C_TIMEOUT_CYCLES;
+    while (!(DL_I2C_getControllerStatus(SENSOR_I2C)
+             & DL_I2C_CONTROLLER_STATUS_IDLE)) {
+        if (--timeout == 0) return;
+    }
+
     DL_I2C_startControllerTransfer(SENSOR_I2C, slaveAddr,
         DL_I2C_CONTROLLER_DIRECTION_TX, len);
 
+    /* Poll BUSY_BUS until the bus is free (STOP detected) */
+    timeout = I2C_TIMEOUT_CYCLES;
     while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
+           & DL_I2C_CONTROLLER_STATUS_BUSY_BUS) {
+        if (--timeout == 0) return;
+    }
 }
 
 void Board_I2C_Read(uint8_t slaveAddr, uint8_t *data, uint8_t len)
 {
-    while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
+    /* Wait for controller to be idle */
+    uint32_t timeout = I2C_TIMEOUT_CYCLES;
+    while (!(DL_I2C_getControllerStatus(SENSOR_I2C)
+             & DL_I2C_CONTROLLER_STATUS_IDLE)) {
+        if (--timeout == 0) return;
+    }
 
     DL_I2C_startControllerTransfer(SENSOR_I2C, slaveAddr,
         DL_I2C_CONTROLLER_DIRECTION_RX, len);
 
-    while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
-
+    /* Poll RX FIFO and read byte by byte (per TI polling example) */
     uint8_t i;
     for (i = 0; i < len; i++) {
+        timeout = I2C_TIMEOUT_CYCLES;
+        while (DL_I2C_isControllerRXFIFOEmpty(SENSOR_I2C)) {
+            if (--timeout == 0) return;
+        }
         data[i] = DL_I2C_receiveControllerData(SENSOR_I2C);
     }
 }
@@ -72,26 +181,42 @@ void Board_I2C_WriteReg(uint8_t slaveAddr, uint8_t reg, uint8_t value)
 
 void Board_I2C_ReadReg(uint8_t slaveAddr, uint8_t reg, uint8_t *data, uint8_t len)
 {
-    /* Write register address */
-    while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
+    uint32_t timeout;
 
+    /* Step 1: Write register address */
     DL_I2C_fillControllerTXFIFO(SENSOR_I2C, &reg, 1);
+
+    timeout = I2C_TIMEOUT_CYCLES;
+    while (!(DL_I2C_getControllerStatus(SENSOR_I2C)
+             & DL_I2C_CONTROLLER_STATUS_IDLE)) {
+        if (--timeout == 0) return;
+    }
+
     DL_I2C_startControllerTransfer(SENSOR_I2C, slaveAddr,
         DL_I2C_CONTROLLER_DIRECTION_TX, 1);
 
+    timeout = I2C_TIMEOUT_CYCLES;
     while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
+           & DL_I2C_CONTROLLER_STATUS_BUSY_BUS) {
+        if (--timeout == 0) return;
+    }
 
-    /* Restart as read */
+    /* Step 2: Read data */
+    timeout = I2C_TIMEOUT_CYCLES;
+    while (!(DL_I2C_getControllerStatus(SENSOR_I2C)
+             & DL_I2C_CONTROLLER_STATUS_IDLE)) {
+        if (--timeout == 0) return;
+    }
+
     DL_I2C_startControllerTransfer(SENSOR_I2C, slaveAddr,
         DL_I2C_CONTROLLER_DIRECTION_RX, len);
 
-    while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY) {}
-
     uint8_t i;
     for (i = 0; i < len; i++) {
+        timeout = I2C_TIMEOUT_CYCLES;
+        while (DL_I2C_isControllerRXFIFOEmpty(SENSOR_I2C)) {
+            if (--timeout == 0) return;
+        }
         data[i] = DL_I2C_receiveControllerData(SENSOR_I2C);
     }
 }

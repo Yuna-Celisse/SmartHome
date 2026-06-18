@@ -2,7 +2,7 @@
 
 int TMP116_Init(void)
 {
-    /* Verify device ID */
+    /* Verify device ID — should be 0x0116 at address 0x48 on BOOSTXL-BASSENSORS */
     uint16_t devid = TMP116_ReadDeviceID();
     if (devid != TMP116_DEVICE_ID_VAL) {
         return -1;

@@ -1,7 +1,8 @@
 #include "ti_msp_dl_config.h"
 #include "board_init.h"
 #include "sensors/sensor_hdc2010.h"
-#include "sensors/sensor_tmp116.h"
+#include "sensors/sensor_tmp007.h"
+#include "sensors/sensor_bmi160.h"
 #include "sensors/sensor_opt3001.h"
 #include "sensors/sensor_drv5055.h"
 #include "voice_protocol.h"
@@ -114,11 +115,71 @@ static void delay_ms(uint32_t ms)
     }
 }
 
+/**
+ * @brief  Convert a signed float to a string with one decimal place.
+ *
+ * Handles the range -999.9 to +999.9. Positive values have no explicit
+ * '+' sign. Zero is formatted as "0.0". The output is null-terminated.
+ *
+ * @param[in]  value  Float value to format.
+ * @param[out] buf    Output buffer, minimum 8 bytes.
+ * @return            Pointer to buf for use in string assembly.
+ */
+static char* float_to_str(float value, char *buf)
+{
+    char *ptr = buf;
+
+    if (value < 0.0f) {
+        *ptr++ = '-';
+        value = -value;
+    }
+
+    /* Clamp to prevent integer overflow on extreme values */
+    if (value > 999.9f) {
+        value = 999.9f;
+    }
+
+    int int_part = (int)value;
+    int frac_part = (int)((value - (float)int_part) * 10.0f + 0.5f);
+
+    /* Handle rounding carry: e.g. 25.95 -> "26.0" not "25.10" */
+    if (frac_part >= 10) {
+        frac_part = 0;
+        int_part++;
+    }
+
+    /* Emit integer digits — suppress leading zeros */
+    if (int_part >= 100) *ptr++ = (char)('0' + int_part / 100);
+    if (int_part >= 10)  *ptr++ = (char)('0' + (int_part / 10) % 10);
+    *ptr++ = (char)('0' + int_part % 10);
+
+    *ptr++ = '.';
+    *ptr++ = (char)('0' + frac_part);
+    *ptr = '\0';
+
+    return buf;
+}
+
 int main(void)
 {
     SYSCFG_DL_init();
 
-    /* Initialize sensor hardware (I2C, ADC, GPIO enables) */
+    /**
+     * Power on BOOSTXL-BASSENSORS sensors FIRST.
+     * The sensor power rail also supplies the I2C pull-up
+     * resistors — pull-up voltage must be present before
+     * the I2C peripheral is initialized.
+     */
+    Board_Sensor_Enable();
+
+    /**
+     * Initialize I2C1 bus (pinmux, reset, power, clock,
+     * 100kHz timer, controller enable). Must run AFTER
+     * sensor power is stable so I2C pull-ups are active.
+     */
+    Board_I2C_Init();
+
+    /* Allow I2C bus and sensors to stabilize */
     Board_Sensor_Init();
 
     /**
@@ -167,10 +228,15 @@ int main(void)
     LED_OFF();
 
     /* Initialize each sensor */
-    int hdc2010_ok = (HDC2010_Init() == 0);
-    int tmp116_ok  = (TMP116_Init() == 0);
+    int bmi160_ok  = (BMI160_Init() == 0);
+    int tmp007_ok  = (TMP007_Init() == 0);
+    int hdc2010_ok = 0; /* skip init: 0x40 is ghost address, writes corrupt bus */
     int opt3001_ok = (OPT3001_Init() == 0);
     int drv5055_ok = (DRV5055_Init() == 0);
+
+    float temp_tmp007 = 0.0f;
+    float temp_bmi160 = 0.0f;
+    uint32_t report_counter = 0;
 
     while (1) {
         /**
@@ -179,23 +245,14 @@ int main(void)
          * no polling needed in the main loop.
          */
 
-        /* ---- HDC2010: Humidity + Temperature ---- */
-        if (hdc2010_ok) {
-            HDC2010_StartMeasurement();
-            delay_ms(10); /* wait for conversion */
-
-            if (HDC2010_IsDataReady()) {
-                float humidity = HDC2010_ReadHumidity();
-                float temp_hdc = HDC2010_ReadTemperature();
-                (void)humidity;
-                (void)temp_hdc;
-            }
+        /* ---- TMP007: IR Object Temperature ---- */
+        if (tmp007_ok) {
+            temp_tmp007 = TMP007_ReadTemperature();
         }
 
-        /* ---- TMP116: High-precision Temperature ---- */
-        if (tmp116_ok) {
-            float temp_tmp116 = TMP116_ReadTemperature();
-            (void)temp_tmp116;
+        /* ---- BMI160: IMU Die Temperature ---- */
+        if (bmi160_ok) {
+            temp_bmi160 = BMI160_ReadTemperature();
         }
 
         /* ---- OPT3001: Ambient Light (lux) ---- */
@@ -208,6 +265,43 @@ int main(void)
         if (drv5055_ok) {
             float magFlux = DRV5055_ReadMagneticFlux();
             (void)magFlux;
+        }
+
+        /* ---- 5-second UART temperature report ---- */
+        report_counter++;
+        if (report_counter >= 5) {
+            report_counter = 0;
+
+            char buf_tmp007[8];
+            char buf_bmi160[8];
+
+            if (tmp007_ok) {
+                float_to_str(temp_tmp007, buf_tmp007);
+            } else {
+                buf_tmp007[0] = 'N'; buf_tmp007[1] = '/';
+                buf_tmp007[2] = 'A'; buf_tmp007[3] = '\0';
+            }
+
+            if (bmi160_ok) {
+                float_to_str(temp_bmi160, buf_bmi160);
+            } else {
+                buf_bmi160[0] = 'N'; buf_bmi160[1] = '/';
+                buf_bmi160[2] = 'A'; buf_bmi160[3] = '\0';
+            }
+
+            /* "BMI:31.0 TMP:24.0 C\r\n" */
+            char report[48];
+            char *p = report;
+            const char *s;
+
+            s = "BMI:"; while (*s) *p++ = *s++;
+            s = buf_bmi160; while (*s) *p++ = *s++;
+            s = " TMP:"; while (*s) *p++ = *s++;
+            s = buf_tmp007; while (*s) *p++ = *s++;
+            s = " C\r\n"; while (*s) *p++ = *s++;
+            *p = '\0';
+
+            Board_UART_WriteString(UART_DEBUG_INST, report);
         }
 
         delay_ms(1000);

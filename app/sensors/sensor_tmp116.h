@@ -3,7 +3,8 @@
 
 #include "board_init.h"
 
-#define TMP116_I2C_ADDR       0x48
+/* BOOSTXL-BASSENSORS: ADD0 tied to VCC → 0x49 */
+#define TMP116_I2C_ADDR       0x49
 
 /* TMP116 registers */
 #define TMP116_REG_TEMP         0x00

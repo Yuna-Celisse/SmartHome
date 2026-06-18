@@ -36,6 +36,26 @@
 /* Sensor power-up delay after enable pins are driven low by SysConfig */
 void Board_Sensor_Init(void);
 
+/**
+ * @brief  Initialize I2C1 peripheral (PB2 SCL / PB3 SDA @ 400kHz).
+ *
+ * Configures GPIO pinmux for I2C1 alternate function, resets and
+ * powers on the I2C peripheral, sets BUSCLK clock source, configures
+ * controller mode with 400kHz bus speed, and enables the controller.
+ *
+ * Must be called before any sensor I2C read/write operations.
+ */
+void Board_I2C_Init(void);
+
+/**
+ * @brief  Drive sensor enable pins low to power on the BoosterPack sensors.
+ *
+ * HDC2010_EN (PB24) and DRV5055_EN (PB15) are active-low load-switch
+ * enables. Driving them low turns on the respective sensor LDOs.
+ * Includes a 10ms delay for LDO ramp and sensor startup.
+ */
+void Board_Sensor_Enable(void);
+
 /* I2C helpers */
 void Board_I2C_Write(uint8_t slaveAddr, const uint8_t *data, uint8_t len);
 void Board_I2C_Read(uint8_t slaveAddr, uint8_t *data, uint8_t len);
