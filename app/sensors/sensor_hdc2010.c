@@ -6,6 +6,9 @@ int HDC2010_Init(void)
     Board_I2C_WriteReg(HDC2010_I2C_ADDR, HDC2010_REG_RESET_DRDY_CONF, HDC2010_SOFT_RESET);
     delay_cycles(32000); /* ~1ms */
 
+    /* Enable DRDY status bits in register 0x04 for data-ready polling */
+    Board_I2C_WriteReg(HDC2010_I2C_ADDR, HDC2010_REG_RESET_DRDY_CONF, HDC2010_DRDY_EN);
+
     /* Configure: 14-bit temp + humidity, measure both */
     uint8_t config = HDC2010_RES_14BIT | HDC2010_MEAS_CONF_TEMP_HUMID;
     Board_I2C_WriteReg(HDC2010_I2C_ADDR, HDC2010_REG_MEAS_CONFIG, config);
@@ -14,6 +17,7 @@ int HDC2010_Init(void)
     uint8_t readback;
     Board_I2C_ReadReg(HDC2010_I2C_ADDR, HDC2010_REG_MEAS_CONFIG, &readback, 1);
 
+    /* Init passes only if config matches (real I2C verification) */
     return (readback == config) ? 0 : -1;
 }
 

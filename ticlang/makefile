@@ -14,7 +14,7 @@ SYSCFG_C_FILES = $(filter %.c,$(SYSCFG_FILES))
 SYSCFG_H_FILES = $(filter %.h,$(SYSCFG_FILES))
 SYSCFG_OPT_FILES = $(filter %.opt,$(SYSCFG_FILES))
 
-OBJECTS = main.obj board_init.obj sensor_hdc2010.obj sensor_tmp116.obj sensor_opt3001.obj sensor_drv5055.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
+OBJECTS = main.obj board_init.obj voice_protocol.obj sensor_hdc2010.obj sensor_tmp007.obj sensor_bmi160.obj sensor_opt3001.obj sensor_drv5055.obj $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 NAME = smart_home
 
 CFLAGS += -I.. \
@@ -84,7 +84,15 @@ sensor_hdc2010.obj: ../app/sensors/sensor_hdc2010.c $(SYSCFG_H_FILES)
 	@ echo Building $@
 	@ $(CC) $(CFLAGS) -c $< -o $@
 
-sensor_tmp116.obj: ../app/sensors/sensor_tmp116.c $(SYSCFG_H_FILES)
+sensor_tmp007.obj: ../app/sensors/sensor_tmp007.c $(SYSCFG_H_FILES)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+sensor_bmi160.obj: ../app/sensors/sensor_bmi160.c $(SYSCFG_H_FILES)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+voice_protocol.obj: ../app/voice_protocol.c $(SYSCFG_H_FILES)
 	@ echo Building $@
 	@ $(CC) $(CFLAGS) -c $< -o $@
 

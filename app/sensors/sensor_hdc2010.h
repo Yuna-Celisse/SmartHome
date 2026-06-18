@@ -28,8 +28,9 @@
 #define HDC2010_DRDY_TEMP           0x01
 #define HDC2010_DRDY_HUMID          0x02
 
-/* Reset command */
+/* Reset / DRDY config */
 #define HDC2010_SOFT_RESET          0x80
+#define HDC2010_DRDY_EN             0x10
 
 int  HDC2010_Init(void);
 void HDC2010_StartMeasurement(void);
