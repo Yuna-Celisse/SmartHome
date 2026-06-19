@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-基于 TI MSPM0G3507 (Cortex-M0+ @ 32MHz) 的多传感器环境监测固件，运行在 LP-MSPM0G3507 LaunchPad + **BOOSTXL-SENSORS** BoosterPack 平台。通过 I2C1/ADC12 采集温度、照度、磁通量数据，三路 UART 覆盖调试、WiFi 和语音模块通信。
+基于 TI MSPM0G3507 (Cortex-M0+ @ 32MHz) 的多传感器固件，运行在 LP-MSPM0G3507 LaunchPad + **BOOSTXL-SENSORS** BoosterPack 平台。通过 I2C1 采集 BMI160 陀螺仪数据，UART0 以 FireWater 协议实时上报至 VOFA+。
 
 **外设分配：**
 
 | UART | 硬件 | 引脚 | 用途 |
 |------|------|------|------|
-| UART0 | UART0 | PA10(TX)/PA11(RX) | XDS110 调试串口，中断驱动即时回显 |
-| UART1 | UART1 | PB6(TX)/PB7(RX) | ESP8266 WiFi 模块，AT 指令双向桥接 |
+| UART0 | UART0 | PA10(TX)/PA11(RX) | FireWater 陀螺仪数据上报 (CSV, ~50Hz)，RX→UART1 转发 AT 指令 |
+| UART1 | UART1 | PB6(TX)/PB7(RX) | ESP8266 WiFi 模块，仅接收 UART0 转发的 AT 指令（不回复） |
 | UART3 | UART3 | PB12(TX)/PB13(RX) | 语音模块，5 字节协议 (AA 55 [type] [cmd] FB) |
 
 ### BOOSTXL-SENSORS 板载传感器
 
 | 设备 | I2C 地址 | 型号 | 说明 |
 |------|---------|------|------|
-| BMI160 | 0x69 | Bosch 6 轴 IMU | 片上温度传感器 (T = 23 + raw/512 °C) |
+| BMI160 | 0x69 | Bosch 6 轴 IMU | ✓ 3 轴陀螺仪 (GYR_NORMAL 模式, ±2000°/s, 16.384 LSB/°/s) |
 | TMP007 | 0x47 | TI 红外热电堆 | 红外物体温度 (14-bit, 0.0078125 °C/LSB 实测) |
 | BME280 | 0x77 | Bosch 温湿度/气压 | ✓ 环境温度 (自动探测 0x77/0x76, 影子锁存+重试) |
 | OPT3001 | — | TI 环境光 | 未检测到（上电问题） |
@@ -64,9 +64,9 @@ CCS Theia 的调试配置由 GUI 生成，**不在仓库中维护** `.ccxml`、`
 ```
 smart_home.syscfg ──SysConfig──▶ ti_msp_dl_config.c/h   (外设初始化，自动生成，勿手动改)
 app/board_init.c/h               (板级抽象：I2C/ADC/UART/LED，DL API 集中层)
-app/sensors/sensor_*.c/h         (传感器驱动：BME280/BMI160/TMP007/HDC2010/OPT3001/DRV5055)
+app/sensors/sensor_*.c/h         (传感器驱动：BMI160/BME280/TMP007/HDC2010/OPT3001/DRV5055)
 app/voice_protocol.c/h           (语音模块 5 字节协议解析与命令分发)
-app/main.c                       (中断驱动 UART 桥接 + 1Hz 传感器轮询 + 5s BME280 温度上报)
+app/main.c                       (中断驱动 UART 转发 + ~50Hz BMI160 陀螺仪 + FireWater CSV 上报)
 ```
 
 - **`ti_msp_dl_config.c/h`**：SysConfig 生成，包含 `SYSCFG_DL_init()`（GPIO、SYSCTL）。**注意**：生成的代码**不含** I2C 和 UART 初始化——它们由 `board_init` 手动完成。`CPUCLK_FREQ=32000000`。**禁止手动编辑**。
@@ -80,16 +80,31 @@ app/main.c                       (中断驱动 UART 桥接 + 1Hz 传感器轮询
   | 驱动 | 状态 | 说明 |
   |------|------|------|
   | `sensor_bme280` | ✓ 工作 | I2C 0x77 (TI 板默认, 自动探测 0x76), Chip ID 0x60, 8 字节影子锁存突发读取 + MSB 验证 + 最多 5 次重试, 寄存器写入使用原始 DL I2C API（Board_I2C_WriteReg 在此板上会产生损坏值） |
-  | `sensor_bmi160` | ✓ 工作 | I2C 0x69, Chip ID 0xD1, 温度 T=23+raw/512, MSB/LSB 分开读 |
+  | `sensor_bmi160` | ✓ 工作 | I2C 0x69, Chip ID 0xD1, 3 轴陀螺仪 GYR_NORMAL 模式, 灵敏度 16.384 LSB/°/s (默认 ±2000°/s), 6 字节单次读取 + 50µs 间隔 |
   | `sensor_tmp007` | ✓ 可读 | I2C 0x47, MFR ID 0x5449, 温度 14-bit 有符号, LSB=0.0078125°C 实测。**连续模式不可用**——16 位 config 寄存器写失败，传感器停留在单次转换模式 |
   | `sensor_hdc2010` | ✗ 不可用 | 针对 BASSENSORS 编写，0x40 在此板上为无效地址，写操作污染 I2C 总线 |
   | `sensor_tmp116` | ✗ 不可用 | 针对 BASSENSORS 编写，在此板上未检测到 |
 - **`voice_protocol`**：5 字节协议解析（`AA 55 [type] [cmd] FB`），`Voice_Process_Byte()` 逐字节组包，`Voice_Protocol_Init()` 上电广播。
 - **`main.c`**：
-  - 初始化顺序：`SYSCFG_DL_init()` → `Board_Sensor_Enable()` → `Board_I2C_Init()` → `Board_Sensor_Init()` → UART0/1/3 Init → `Voice_Protocol_Init()` → 传感器 Init（BMI160 优先，TMP007 次之，BME280，HDC2010 跳过）
-  - 主循环 @1Hz：轮询 BME280 + OPT3001 + DRV5055
-  - 每 5 次循环（~5s）通过 UART0 上报温度：`BME:XX.X C`
+  - 初始化顺序：`SYSCFG_DL_init()` → `Board_Sensor_Enable()` → `Board_I2C_Init()` → `Board_Sensor_Init()` → UART0/1/3 Init → `Voice_Protocol_Init()` → `BMI160_Init()`
+  - 主循环 @~50Hz：仅读取 BMI160 陀螺仪，通过 UART0 以 FireWater CSV 格式上报
+  - UART0 TX 专用于 FireWater 数据输出（无启动横幅、无温度上报、无回显、无桥接转发）
+  - 三路 ISR：UART0 仅接收转发到 UART1，UART1 接收丢弃，UART3 仅协议解析
   - `float_to_str()` 手工格式化浮点数，避免引入 printf 库
+
+### VOFA+ FireWater 输出协议
+
+UART0 (COM10, 115200 8N1) 以 ~50Hz 频率输出陀螺仪数据：
+
+```
+ch0,ch1,ch2\r\n
+```
+
+- **协议**：FireWater（VOFA+ 原生支持，文本 CSV 格式）
+- **通道**：3 通道 — GX, GY, GZ (°/s)
+- **帧尾**：`\r\n`（CRLF）
+- **示例**：`-0.1,0.4,-0.3\r\n`
+- **VOFA+ 配置**：协议选 FireWater，通道数 3
 
 ## I2C 已知问题
 

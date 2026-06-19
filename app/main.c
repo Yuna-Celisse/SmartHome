@@ -1,26 +1,16 @@
 #include "ti_msp_dl_config.h"
 #include "board_init.h"
-#include "sensors/sensor_hdc2010.h"
-#include "sensors/sensor_tmp007.h"
 #include "sensors/sensor_bmi160.h"
-#include "sensors/sensor_bme280.h"
-#include "sensors/sensor_opt3001.h"
-#include "sensors/sensor_drv5055.h"
 #include "voice_protocol.h"
 
 /**
- * @brief  UART0 interrupt handler — local echo + forward to ESP8266.
+ * @brief  UART0 interrupt handler — forward RX bytes to ESP8266.
  *
  * Fires on every received byte (RX FIFO threshold = 1 entry).
- * Each byte is:
- *   1. Echoed back to UART0 (local echo so the user sees what they type).
- *   2. Forwarded to UART1 (ESP8266) for AT command processing.
+ * Each byte is forwarded to UART1 (ESP8266) for AT command processing.
+ * No local echo — UART0 TX is reserved for FireWater gyroscope frames.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
- *
- * @note  Blocking TX on UART1 in ISR context is safe because TX at
- *        115200 baud keeps pace with RX — the TX FIFO is never full
- *        during normal operation.
  */
 void UART0_IRQHandler(void)
 {
@@ -28,16 +18,6 @@ void UART0_IRQHandler(void)
     case DL_UART_MAIN_IIDX_RX:
         while (!DL_UART_Main_isRXFIFOEmpty(UART0)) {
             uint8_t ch = DL_UART_Main_receiveData(UART0);
-            /**
-             * Local echo on UART0 so the user sees typed characters
-             * immediately in the serial terminal.
-             */
-            DL_UART_Main_transmitDataBlocking(UART0, ch);
-            /**
-             * Forward the same byte to UART1 (ESP8266) for AT command
-             * processing. The ESP8266 receives the command character
-             * by character, matching standard UART AT firmware behavior.
-             */
             DL_UART_Main_transmitDataBlocking(UART1, ch);
         }
         break;
@@ -47,11 +27,11 @@ void UART0_IRQHandler(void)
 }
 
 /**
- * @brief  UART1 interrupt handler — forward ESP8266 responses to UART0.
+ * @brief  UART1 interrupt handler — receive ESP8266 responses.
  *
  * Fires on every byte received from the ESP8266 on UART1.
- * Each byte is forwarded to UART0 (XDS110 debug console) so the user
- * can see AT command responses in the serial terminal.
+ * Receives and discards — UART0 TX is reserved for FireWater frames.
+ * To monitor ESP8266 responses, connect a separate serial adapter to UART1.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
@@ -60,12 +40,7 @@ void UART1_IRQHandler(void)
     switch (DL_UART_Main_getPendingInterrupt(UART1)) {
     case DL_UART_MAIN_IIDX_RX:
         while (!DL_UART_Main_isRXFIFOEmpty(UART1)) {
-            uint8_t ch = DL_UART_Main_receiveData(UART1);
-            /**
-             * Forward ESP8266 response byte to UART0 for display
-             * in the debug serial terminal.
-             */
-            DL_UART_Main_transmitDataBlocking(UART0, ch);
+            (void)DL_UART_Main_receiveData(UART1);
         }
         break;
     default:
@@ -77,10 +52,9 @@ void UART1_IRQHandler(void)
  * @brief  UART3 interrupt handler — voice-module protocol processing.
  *
  * Fires on every byte received from the voice module on UART3 (PB12/PB13).
- * Each byte is:
- *   1. Fed into Voice_Process_Byte() for 5-byte protocol parsing.
- *   2. Forwarded to UART0 (XDS110 debug console) so protocol traffic
- *      is visible in the serial terminal for debugging.
+ * Each byte is fed into Voice_Process_Byte() for 5-byte protocol parsing.
+ * Raw bytes are NOT forwarded to UART0 — UART0 TX is reserved for
+ * FireWater gyroscope frames.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
@@ -90,17 +64,7 @@ void UART3_IRQHandler(void)
     case DL_UART_MAIN_IIDX_RX:
         while (!DL_UART_Main_isRXFIFOEmpty(UART_VOICE_INST)) {
             uint8_t ch = DL_UART_Main_receiveData(UART_VOICE_INST);
-            /**
-             * Parse the received byte through the voice-module
-             * 5-byte protocol handler (AA 55 [type] [cmd] FB).
-             */
             Voice_Process_Byte(ch);
-            /**
-             * Forward raw bytes to UART0 for debug visibility.
-             * Protocol bytes will appear in the serial terminal
-             * alongside other UART traffic.
-             */
-            DL_UART_Main_transmitDataBlocking(UART0, ch);
         }
         break;
     default:
@@ -108,23 +72,14 @@ void UART3_IRQHandler(void)
     }
 }
 
-/* Simple busy-wait delay (approx. ms at 32MHz CPUCLK) */
-static void delay_ms(uint32_t ms)
-{
-    for (uint32_t i = 0; i < ms; i++) {
-        delay_cycles(32000);
-    }
-}
-
 /**
  * @brief  Convert a signed float to a string with one decimal place.
  *
- * Handles the range -999.9 to +999.9. Positive values have no explicit
- * '+' sign. Zero is formatted as "0.0". The output is null-terminated.
+ * Handles the range -999.9 to +999.9. Zero is formatted as "0.0".
  *
  * @param[in]  value  Float value to format.
  * @param[out] buf    Output buffer, minimum 8 bytes.
- * @return            Pointer to buf for use in string assembly.
+ * @return            Pointer to buf.
  */
 static char* float_to_str(float value, char *buf)
 {
@@ -134,31 +89,27 @@ static char* float_to_str(float value, char *buf)
         *ptr++ = '-';
         value = -value;
     }
-
-    /* Clamp to prevent integer overflow on extreme values */
-    if (value > 999.9f) {
-        value = 999.9f;
-    }
+    if (value > 999.9f) { value = 999.9f; }
 
     int int_part = (int)value;
     int frac_part = (int)((value - (float)int_part) * 10.0f + 0.5f);
+    if (frac_part >= 10) { frac_part = 0; int_part++; }
 
-    /* Handle rounding carry: e.g. 25.95 -> "26.0" not "25.10" */
-    if (frac_part >= 10) {
-        frac_part = 0;
-        int_part++;
-    }
-
-    /* Emit integer digits — suppress leading zeros */
     if (int_part >= 100) *ptr++ = (char)('0' + int_part / 100);
     if (int_part >= 10)  *ptr++ = (char)('0' + (int_part / 10) % 10);
     *ptr++ = (char)('0' + int_part % 10);
-
     *ptr++ = '.';
     *ptr++ = (char)('0' + frac_part);
     *ptr = '\0';
-
     return buf;
+}
+
+/* Simple busy-wait delay (approx. ms at 32MHz CPUCLK) */
+static void delay_ms(uint32_t ms)
+{
+    for (uint32_t i = 0; i < ms; i++) {
+        delay_cycles(32000);
+    }
 }
 
 int main(void)
@@ -193,18 +144,11 @@ int main(void)
     Board_UART0_Init(UART_DEBUG_BAUD);
     NVIC_EnableIRQ(UART0_INT_IRQn);
 
-    /* Send startup banner so PC terminal can verify connection */
-    Board_UART_WriteString(UART_DEBUG_INST,
-        "\r\n=== SmartHome UART0<->UART1 Bridge ===\r\n");
-    Board_UART_WriteString(UART_DEBUG_INST,
-        "Type AT commands -> ESP8266, responses -> terminal.\r\n");
-
     /**
      * Initialize UART1 (ESP8266 WiFi module, PB6/PB7).
-     * Board_UART1_Init() enables the UART RX interrupt at the
-     * peripheral level; NVIC_EnableIRQ() unmasks it at the core.
-     * Together with UART0, this forms a bidirectional bridge:
-     *   UART0 (terminal) ←→ UART1 (ESP8266)
+     * UART0 RX → UART1 TX forwarding is handled by UART0_IRQHandler.
+     * UART1 RX is received but not forwarded — UART0 TX is reserved
+     * for FireWater gyroscope frames.
      */
     Board_UART1_Init(UART_ESP_BAUD);
     NVIC_EnableIRQ(UART1_INT_IRQn);
@@ -228,68 +172,42 @@ int main(void)
     delay_ms(200);
     LED_OFF();
 
-    /* Initialize each sensor */
-    int bmi160_ok  = (BMI160_Init() == 0);
-    int tmp007_ok  = (TMP007_Init() == 0);
-    int bme280_ok  = (BME280_Init() == 0);
-    int hdc2010_ok = 0; /* skip init: 0x40 is ghost address, writes corrupt bus */
-    int opt3001_ok = (OPT3001_Init() == 0);
-    int drv5055_ok = (DRV5055_Init() == 0);
-
-    float temp_bme280 = 0.0f;
-    uint32_t report_counter = 0;
+    /* Initialize BMI160 gyroscope */
+    int bmi160_ok = (BMI160_Init() == 0);
 
     while (1) {
-        /**
-         * UART0 echo + bridge and UART3 voice protocol are handled
-         * entirely by interrupt service routines in the background —
-         * no polling needed in the main loop.
-         */
+        /* ---- BMI160: Gyroscope 3-axis angular rate (°/s) ---- */
+        if (bmi160_ok) {
+            float gx, gy, gz;
+            BMI160_ReadGyro(&gx, &gy, &gz);
 
-        /* ---- BME280: Environmental Temperature ---- */
-        if (bme280_ok) {
-            temp_bme280 = BME280_ReadTemperature();
-        }
+            /*
+             * VOFA+ FireWater CSV frame:
+             *   ch0,ch1,ch2\r\n
+             *   FireWater is a text protocol: comma-separated
+             *   float strings, CRLF-terminated.
+             */
+            char buf_gx[8], buf_gy[8], buf_gz[8];
+            float_to_str(gx, buf_gx);
+            float_to_str(gy, buf_gy);
+            float_to_str(gz, buf_gz);
 
-        /* ---- OPT3001: Ambient Light (lux) ---- */
-        if (opt3001_ok) {
-            float lux = OPT3001_ReadLux();
-            (void)lux;
-        }
-
-        /* ---- DRV5055: Hall Effect Magnetic Flux (mT) ---- */
-        if (drv5055_ok) {
-            float magFlux = DRV5055_ReadMagneticFlux();
-            (void)magFlux;
-        }
-
-        /* ---- 5-second UART temperature report ---- */
-        report_counter++;
-        if (report_counter >= 5) {
-            report_counter = 0;
-
-            char buf_bme280[8];
-
-            if (bme280_ok) {
-                float_to_str(temp_bme280, buf_bme280);
-            } else {
-                buf_bme280[0] = 'N'; buf_bme280[1] = '/';
-                buf_bme280[2] = 'A'; buf_bme280[3] = '\0';
-            }
-
-            /* "BME:25.3 C\r\n" */
-            char report[32];
-            char *p = report;
+            char line[48];
+            char *p = line;
             const char *s;
 
-            s = "BME:"; while (*s) *p++ = *s++;
-            s = buf_bme280; while (*s) *p++ = *s++;
-            s = " C\r\n"; while (*s) *p++ = *s++;
+            s = buf_gx; while (*s) *p++ = *s++;
+            *p++ = ',';
+            s = buf_gy; while (*s) *p++ = *s++;
+            *p++ = ',';
+            s = buf_gz; while (*s) *p++ = *s++;
+            *p++ = '\r';
+            *p++ = '\n';
             *p = '\0';
 
-            Board_UART_WriteString(UART_DEBUG_INST, report);
+            Board_UART_WriteString(UART_DEBUG_INST, line);
         }
 
-        delay_ms(1000);
+        delay_ms(20); /* ~50Hz */
     }
 }
