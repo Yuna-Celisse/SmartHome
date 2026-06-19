@@ -450,6 +450,16 @@
               <FilePath>../app/sensors/sensor_bmi160.h</FilePath>
             </File>
             <File>
+              <FileName>sensor_bme280.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/sensors/sensor_bme280.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_bme280.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/sensors/sensor_bme280.h</FilePath>
+            </File>
+            <File>
               <FileName>sensor_opt3001.c</FileName>
               <FileType>1</FileType>
               <FilePath>../app/sensors/sensor_opt3001.c</FilePath>
