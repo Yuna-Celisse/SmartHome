@@ -7,13 +7,11 @@
  *
  * @author Yuna-Celisse
  *
- * @brief BMI160 IMU temperature sensor driver for BOOSTXL-SENSORS.
+ * @brief BMI160 IMU gyroscope driver for BOOSTXL-SENSORS.
  *
- * The BMI160's internal temperature sensor provides die temperature
- * as a signed 16-bit value. The sensor is always active when the
- * accelerometer is in normal mode.
- *
- * Temperature formula: T(°C) = 23.0 + raw / 512.0
+ * Reads 3-axis gyroscope angular rate (0x0C-0x11) and converts
+ * to °/s using sensitivity = 16.384 LSB/°/s (default ±2000°/s range).
+ * Gyro is started in normal mode during init.
  *
  * @version V1.0 2026-6-19
  *
@@ -42,30 +40,48 @@ int BMI160_Init(void)
         return -1;
     }
 
-    /* Set accelerometer to normal mode to enable temperature sensor */
-    bmi160_write_reg(BMI160_REG_CMD, BMI160_CMD_ACC_NORMAL);
+    /* Start gyroscope in normal mode to enable angular rate output */
+    bmi160_write_reg(BMI160_REG_CMD, BMI160_CMD_GYR_NORMAL);
 
-    /* Wait for power-up and sensor stabilization */
-    delay_cycles(1600000); /* ~50ms */
+    /* Wait for gyro power-up and stabilization (~80ms) */
+    delay_cycles(2560000);
 
     return 0;
 }
 
-float BMI160_ReadTemperature(void)
+void BMI160_ReadGyro(float *gx, float *gy, float *gz)
 {
-    uint8_t msb, lsb;
-    int16_t raw;
+    uint8_t xLsb, xMsb, yLsb, yMsb, zLsb, zMsb;
+    int16_t rawX, rawY, rawZ;
 
     /*
-     * Read MSB and LSB in two separate I2C transactions.
-     * The BMI160 on BOOSTXL-SENSORS appears to have an issue
-     * with multi-byte reads (auto-increment returning wrong data).
-     * Single-byte reads produce consistent results.
+     * Read all 6 gyro data bytes with single-byte I2C reads.
+     * Multi-byte reads on this board are unreliable (auto-increment
+     * returns corrupted data ~50% of the time), so each register
+     * is read individually with a short settle delay between reads.
+     * GYR data format: LSB first at even address, MSB at odd address.
      */
-    bmi160_read_reg(BMI160_REG_TEMP_MSB, &msb, 1);
-    delay_cycles(1600); /* ~50us settle between reads */
-    bmi160_read_reg(BMI160_REG_TEMP_LSB, &lsb, 1);
 
-    raw = (int16_t)(((uint16_t)msb << 8) | lsb);
-    return 23.0f + (float)raw / 512.0f;
+    bmi160_read_reg(BMI160_REG_GYR_X_LSB,     &xLsb, 1);
+    delay_cycles(1600); /* ~50us settle */
+    bmi160_read_reg(BMI160_REG_GYR_X_LSB + 1, &xMsb, 1);
+    delay_cycles(1600);
+
+    bmi160_read_reg(BMI160_REG_GYR_Y_LSB,     &yLsb, 1);
+    delay_cycles(1600);
+    bmi160_read_reg(BMI160_REG_GYR_Y_LSB + 1, &yMsb, 1);
+    delay_cycles(1600);
+
+    bmi160_read_reg(BMI160_REG_GYR_Z_LSB,     &zLsb, 1);
+    delay_cycles(1600);
+    bmi160_read_reg(BMI160_REG_GYR_Z_LSB + 1, &zMsb, 1);
+
+    /* LSB first: raw = LSB | (MSB << 8) */
+    rawX = (int16_t)(((uint16_t)xMsb << 8) | xLsb);
+    rawY = (int16_t)(((uint16_t)yMsb << 8) | yLsb);
+    rawZ = (int16_t)(((uint16_t)zMsb << 8) | zLsb);
+
+    *gx = (float)rawX / BMI160_GYR_SENSITIVITY;
+    *gy = (float)rawY / BMI160_GYR_SENSITIVITY;
+    *gz = (float)rawZ / BMI160_GYR_SENSITIVITY;
 }
