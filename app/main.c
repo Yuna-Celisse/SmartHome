@@ -3,6 +3,7 @@
 #include "sensors/sensor_hdc2010.h"
 #include "sensors/sensor_tmp007.h"
 #include "sensors/sensor_bmi160.h"
+#include "sensors/sensor_bme280.h"
 #include "sensors/sensor_opt3001.h"
 #include "sensors/sensor_drv5055.h"
 #include "voice_protocol.h"
@@ -230,12 +231,12 @@ int main(void)
     /* Initialize each sensor */
     int bmi160_ok  = (BMI160_Init() == 0);
     int tmp007_ok  = (TMP007_Init() == 0);
+    int bme280_ok  = (BME280_Init() == 0);
     int hdc2010_ok = 0; /* skip init: 0x40 is ghost address, writes corrupt bus */
     int opt3001_ok = (OPT3001_Init() == 0);
     int drv5055_ok = (DRV5055_Init() == 0);
 
-    float temp_tmp007 = 0.0f;
-    float temp_bmi160 = 0.0f;
+    float temp_bme280 = 0.0f;
     uint32_t report_counter = 0;
 
     while (1) {
@@ -245,14 +246,9 @@ int main(void)
          * no polling needed in the main loop.
          */
 
-        /* ---- TMP007: IR Object Temperature ---- */
-        if (tmp007_ok) {
-            temp_tmp007 = TMP007_ReadTemperature();
-        }
-
-        /* ---- BMI160: IMU Die Temperature ---- */
-        if (bmi160_ok) {
-            temp_bmi160 = BMI160_ReadTemperature();
+        /* ---- BME280: Environmental Temperature ---- */
+        if (bme280_ok) {
+            temp_bme280 = BME280_ReadTemperature();
         }
 
         /* ---- OPT3001: Ambient Light (lux) ---- */
@@ -272,32 +268,22 @@ int main(void)
         if (report_counter >= 5) {
             report_counter = 0;
 
-            char buf_tmp007[8];
-            char buf_bmi160[8];
+            char buf_bme280[8];
 
-            if (tmp007_ok) {
-                float_to_str(temp_tmp007, buf_tmp007);
+            if (bme280_ok) {
+                float_to_str(temp_bme280, buf_bme280);
             } else {
-                buf_tmp007[0] = 'N'; buf_tmp007[1] = '/';
-                buf_tmp007[2] = 'A'; buf_tmp007[3] = '\0';
+                buf_bme280[0] = 'N'; buf_bme280[1] = '/';
+                buf_bme280[2] = 'A'; buf_bme280[3] = '\0';
             }
 
-            if (bmi160_ok) {
-                float_to_str(temp_bmi160, buf_bmi160);
-            } else {
-                buf_bmi160[0] = 'N'; buf_bmi160[1] = '/';
-                buf_bmi160[2] = 'A'; buf_bmi160[3] = '\0';
-            }
-
-            /* "BMI:31.0 TMP:24.0 C\r\n" */
-            char report[48];
+            /* "BME:25.3 C\r\n" */
+            char report[32];
             char *p = report;
             const char *s;
 
-            s = "BMI:"; while (*s) *p++ = *s++;
-            s = buf_bmi160; while (*s) *p++ = *s++;
-            s = " TMP:"; while (*s) *p++ = *s++;
-            s = buf_tmp007; while (*s) *p++ = *s++;
+            s = "BME:"; while (*s) *p++ = *s++;
+            s = buf_bme280; while (*s) *p++ = *s++;
             s = " C\r\n"; while (*s) *p++ = *s++;
             *p = '\0';
 
