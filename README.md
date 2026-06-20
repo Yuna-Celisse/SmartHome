@@ -1,94 +1,100 @@
-# SmartHome — 多传感器环境监测固件
+# SmartHome — MSPM0G3507 多传感器固件
 
-基于 TI MSPM0G3507 的嵌入式环境传感采集系统，运行在 LP-MSPM0G3507 LaunchPad + BOOSTXL-BASSENSORS BoosterPack 平台。
+[![ARM GCC Build](https://github.com/Yuna-Celisse/SmartHome/actions/workflows/ticlang-build.yml/badge.svg)](https://github.com/Yuna-Celisse/SmartHome/actions/workflows/ticlang-build.yml)
 
-## 硬件架构
+基于 TI **MSPM0G3507** (Cortex-M0+ @ 32MHz) 的嵌入式多传感器采集系统，运行在 LP-MSPM0G3507 LaunchPad + **BOOSTXL-SENSORS** BoosterPack。
 
-| 组件 | 型号 | 接口 | I2C 地址 | 测量量 |
-|------|------|------|----------|--------|
-| MCU | MSPM0G3507 (Cortex-M0+ @ 32MHz) | — | — | — |
-| 温湿度 | HDC2010 | I2C1 (PB2/PB3) | 0x40 | 温度 ±0.2°C、湿度 ±2%RH |
-| 高精度温度 | TMP116 | I2C1 (PB2/PB3) | 0x48 | 温度 ±0.2°C (16-bit) |
-| 环境光 | OPT3001 | I2C1 (PB2/PB3) | 0x44 | 照度 0.01~83000 lux |
-| 霍尔 | DRV5055 | ADC0 CH2 (PA25) | — | 磁通量密度 (mT) |
+UART0 以 **FireWater 协议** 实时输出 BMI160 陀螺仪数据至 VOFA+ 上位机，同时采集 BME280 环境温度和 OPT3001 光照度。
+
+## 硬件
+
+| 传感器 | 型号 | 接口 | I2C 地址 | 测量量 |
+|--------|------|------|----------|--------|
+| 陀螺仪 | BMI160 | I2C1 | 0x69 | 3 轴角速率 (±2000°/s) |
+| 温湿度 | BME280 | I2C1 | 0x77 | 环境温度 (-40~85°C) |
+| 环境光 | OPT3001 | I2C1 | 0x44 | 照度 (0.01~83000 lux) |
+| 语音模块 | — | UART3 | — | 5 字节协议 (AA 55 [type] [cmd] FB) |
 
 ### 引脚分配
 
-| 引脚 | 功能 | 说明 |
-|------|------|------|
-| PB2 | I2C1 SCL | 传感器总线时钟 |
-| PB3 | I2C1 SDA | 传感器总线数据 |
-| PA25 | ADC0 CH2 | DRV5055 模拟输入 |
-| PB24 | GPIO 输出 (低有效) | HDC2010 使能 |
-| PB15 | GPIO 输出 (低有效) | DRV5055 使能 |
+| 引脚 | 功能 |
+|------|------|
+| PA0 | LED（低有效） |
+| PA10 | UART0 TX → FireWater 数据输出 |
+| PA11 | UART0 RX → AT 指令转发至 ESP8266 |
+| PB2 | I2C1 SCL |
+| PB3 | I2C1 SDA |
+| PB6 | UART1 TX → ESP8266 |
+| PB7 | UART1 RX → ESP8266 |
+| PB12 | UART3 TX → 语音模块 |
+| PB13 | UART3 RX → 语音模块 |
+| PA22 | DRV5055 电源使能（低有效） |
+| PA24 | OPT3001 电源使能（高有效） |
+| PB24 | HDC2010 电源使能（低有效，保留） |
+
+## 构建
+
+### 方式一：Keil MDK
+
+```
+打开 keil/smart_home.uvprojx → F7 构建 → F8 烧录
+```
+
+需要 Keil MDK 5.40 + ARM Compiler 6.22。MSPM0G3507 (Cortex-M0+) 在 Community Edition 免费许可范围内。
+
+### 方式二：TI CCS / 命令行
+
+```bash
+cd ticlang && make
+```
+
+需要 TI Arm Clang 3.2.0+ + SysConfig 1.24.0 + MSPM0 SDK。
+
+### 方式三：ARM GCC（CI 使用）
+
+```bash
+cd ticlang && make -f Makefile.gcc
+```
+
+需要 `arm-none-eabi-gcc`。无需 SysConfig（生成文件已提交仓库）。
+
+## FireWater 输出协议
+
+UART0 (115200 8N1) 以 ~50Hz 频率输出 CSV 格式陀螺仪数据：
+
+```
+-0.1,0.4,-0.3\r\n
+```
+
+VOFA+ 配置：协议 FireWater，通道数 3（GX, GY, GZ °/s）。
 
 ## 软件架构
 
 ```
 SmartHome/
 ├── app/
-│   ├── main.c                    # 主循环：轮询全部传感器 @1Hz
-│   ├── board_init.c/h            # I2C/ADC 底层驱动 + 传感器上电
+│   ├── main.c                    # ~50Hz 陀螺仪 + 1Hz 温湿度/照度
+│   ├── board_init.c/h            # I2C/UART/LED 底层驱动
+│   ├── voice_protocol.c/h        # 语音模块 5 字节协议
 │   └── sensors/
-│       ├── sensor_hdc2010.c/h    # HDC2010 温湿度传感器驱动
-│       ├── sensor_tmp116.c/h     # TMP116 高精度温度传感器驱动
-│       ├── sensor_opt3001.c/h    # OPT3001 环境光传感器驱动
-│       └── sensor_drv5055.c/h    # DRV5055 霍尔传感器驱动
-├── ti_msp_dl_config.c/h          # SysConfig 生成的外设初始化
-├── smart_home.syscfg             # SysConfig 工程文件
+│       ├── sensor_bmi160.c/h     # BMI160 陀螺仪（raw DL I2C）
+│       ├── sensor_bme280.c/h     # BME280 温度（raw DL I2C）
+│       └── sensor_opt3001.c/h    # OPT3001 照度（raw DL I2C）
+├── ti_msp_dl_config.c/h          # SysConfig 生成（已提交）
+├── smart_home.syscfg             # SysConfig 工程
 ├── keil/                         # Keil MDK 工程
-│   ├── smart_home.uvprojx
-│   └── smart_home.uvoptx
-└── ticlang/                      # TI CCS / Makefile 工程
-    ├── makefile
-    ├── smart_home.projectspec
-    └── device_linker.cmd
+├── ticlang/                      # TI Clang + GCC makefile
+├── mspm0-sdk/                    # TI SDK (git submodule)
+└── .github/workflows/            # CI: ARM GCC Build
 ```
 
-## 构建与烧录
+> 所有传感器驱动统一使用原始 DL I2C API（`DL_I2C_fillControllerTXFIFO` +
+> `startControllerTransfer`），绕过 `Board_I2C_WriteReg` 的寄存器写损坏问题。
 
-### 环境准备
+## CI
 
-```bash
-git clone --recurse-submodules <repo-url>
-```
+每次 push/PR 自动在 ubuntu-latest 上以 ARM GCC 构建，上传 hex 产物。
 
-SDK 依赖通过 git submodule 管理（`mspm0-sdk`，版本 `mspm0_sdk_2_10_00_04`）。
+## 许可
 
-### 方式一：TI Code Composer Studio (推荐)
-
-1. 打开 TI CCS Theia，Import CCS Project，选择 `ticlang/` 目录。
-2. Build → Program Target。
-
-### 方式二：Keil MDK
-
-1. 打开 `keil/smart_home.uvprojx`。
-2. 确认 SDK 路径配置（已配置为项目相对路径）。
-3. Build (F7) → Download (F8)。
-
-### 方式三：命令行 (ticlang makefile)
-
-```bash
-cd ticlang
-make
-```
-
-## 运行行为
-
-- 上电后 `SYSCFG_DL_init()` 初始化 GPIO、I2C1 (400kHz)、ADC12。
-- `Board_Sensor_Init()` 等待传感器上电，逐一初始化各传感器。
-- 主循环以 **1Hz** 频率轮询全部四个传感器，读取温湿度、照度、磁通量数据。
-
-## 系统参数
-
-| 参数 | 值 |
-|------|-----|
-| CPU 主频 | 32 MHz |
-| I2C 速率 | 400 kHz (Fast Mode) |
-| ADC 采样时间 | 62.5 ns |
-| 主循环周期 | 1 s |
-
-## 依赖
-
-- [mspm0-sdk](https://github.com/TexasInstruments/mspm0-sdk) (v2.10.00.04) — TI DriverLib、SysConfig、启动文件
-- TI Arm Clang Compiler 3.2.0+ 或 Arm Compiler 6
+MIT
