@@ -2,7 +2,7 @@
  * @file sensor_bme280.c
  *
  * @par dependencies
- *      - board_init.h (Board_I2C_ReadReg, delay_cycles, DL I2C API)
+ *      - board_init.h (SENSOR_I2C, delay_cycles, DL I2C API)
  *      - sensor_bme280.h (this module's interface)
  *
  * @author Yuna-Celisse
@@ -10,14 +10,13 @@
  * @brief BME280 environmental temperature sensor driver for
  *        BOOSTXL-SENSORS.
  *
- * I2C workarounds for this board:
- *   1. Register writes use raw DL I2C API — Board_I2C_WriteReg produces
- *      corrupted register values (confirmed via readback mismatch).
- *   2. Data reads use an 8-byte burst from 0xF7 to trigger the BME280's
- *      internal shadow-latch, guaranteeing all bytes belong to the same
- *      measurement. Multi-byte I2C reads are unreliable ~50% of the time
- *      on this bus, so we retry until the temperature MSB falls within
- *      the valid sensor range (0x30-0xA0, covering -40 to +85 degC).
+ * All I2C operations use raw DL I2C API to bypass the
+ * Board_I2C_WriteReg/ReadReg wrappers which produce corrupted
+ * register values on this board.
+ *
+ * Data reads use an 8-byte burst from 0xF7 to trigger the BME280's
+ * internal shadow-latch, guaranteeing all bytes belong to the same
+ * measurement. Retries up to 5 times with MSB range validation.
  *
  * Temperature compensation (Bosch BME280 datasheet §4.2.3):
  *   var1 = ((raw/16384.0) - (T1/1024.0)) * T2
@@ -25,56 +24,115 @@
  *   t_fine = var1 + var2
  *   T = t_fine / 5120.0
  *
- * @version V1.0 2026-6-19
+ * @version V1.1 2026-6-20
  *
  * @note 1 tab == 4 spaces!
  *****************************************************************************/
 
 #include "sensor_bme280.h"
+#include "ti_msp_dl_config.h" /* DL_I2C API, delay_cycles */
 
 static uint8_t g_bme280_addr = 0;
 static Bme280Calib g_bme280_calib;
 
-#define BME_I2C_TIMEOUT  (320000U)
+/* ---- I2C Helpers ---- */
 
-static void bme280_read_reg(uint8_t reg, uint8_t *data, uint8_t len)
+static void bme280_wait_idle(void)
 {
-    Board_I2C_ReadReg(g_bme280_addr, reg, data, len);
+    while (!(DL_I2C_getControllerStatus(SENSOR_I2C)
+             & DL_I2C_CONTROLLER_STATUS_IDLE)) {
+    }
 }
 
-/*
- * Write register using raw DL I2C API.
- * Board_I2C_WriteReg produces corrupted values on this board
- * (confirmed: write 0x23 to ctrl_meas, readback got 0x35).
- * Direct DL I2C API calls bypass the issue.
+static void bme280_wait_bus_free(void)
+{
+    while (DL_I2C_getControllerStatus(SENSOR_I2C)
+           & DL_I2C_CONTROLLER_STATUS_BUSY_BUS) {
+    }
+}
+
+/**
+ * @brief  Read len bytes from register reg using raw DL I2C write-then-read.
+ */
+static void bme280_read_reg(uint8_t reg, uint8_t *data, uint8_t len)
+{
+    /* Step 1: write register address */
+    bme280_wait_idle();
+    DL_I2C_fillControllerTXFIFO(SENSOR_I2C, &reg, 1);
+    DL_I2C_startControllerTransfer(SENSOR_I2C,
+        g_bme280_addr,
+        DL_I2C_CONTROLLER_DIRECTION_TX, 1);
+    bme280_wait_bus_free();
+
+    /* Step 2: read data */
+    bme280_wait_idle();
+    DL_I2C_startControllerTransfer(SENSOR_I2C,
+        g_bme280_addr,
+        DL_I2C_CONTROLLER_DIRECTION_RX, len);
+
+    for (uint8_t i = 0; i < len; i++) {
+        while (DL_I2C_isControllerRXFIFOEmpty(SENSOR_I2C)) {
+        }
+        data[i] = DL_I2C_receiveControllerData(SENSOR_I2C);
+    }
+    bme280_wait_bus_free();
+}
+
+/**
+ * @brief  Write register value using raw DL I2C API.
+ *
+ * Direct DL I2C API calls bypass the Board_I2C_WriteReg corruption
+ * (confirmed: write 0x23 to ctrl_meas, readback got 0x35 via wrapper).
  */
 static void bme280_write_reg(uint8_t reg, uint8_t value)
 {
-    uint32_t timeout;
     uint8_t buf[2];
     buf[0] = reg;
     buf[1] = value;
 
-    timeout = BME_I2C_TIMEOUT;
-    while (!(DL_I2C_getControllerStatus(SENSOR_I2C)
-             & DL_I2C_CONTROLLER_STATUS_IDLE)) {
-        if (--timeout == 0) return;
-    }
+    bme280_wait_idle();
     DL_I2C_fillControllerTXFIFO(SENSOR_I2C, buf, 2);
-    DL_I2C_startControllerTransfer(SENSOR_I2C, g_bme280_addr,
+    DL_I2C_startControllerTransfer(SENSOR_I2C,
+        g_bme280_addr,
         DL_I2C_CONTROLLER_DIRECTION_TX, 2);
-    timeout = BME_I2C_TIMEOUT;
-    while (DL_I2C_getControllerStatus(SENSOR_I2C)
-           & DL_I2C_CONTROLLER_STATUS_BUSY_BUS) {
-        if (--timeout == 0) return;
-    }
+    bme280_wait_bus_free();
 }
 
+/**
+ * @brief  Probe a candidate I2C address for the BME280.
+ *
+ * Attempts to read the CHIP_ID register via raw DL I2C.
+ * Returns 1 if chip ID matches, 0 on error or mismatch.
+ */
 static int bme280_probe(uint8_t addr, uint8_t *chipId)
 {
-    Board_I2C_ReadReg(addr, BME280_REG_CHIP_ID, chipId, 1);
+    uint8_t reg = BME280_REG_CHIP_ID;
+
+    /* Write register address */
+    bme280_wait_idle();
+    DL_I2C_fillControllerTXFIFO(SENSOR_I2C, &reg, 1);
+    DL_I2C_startControllerTransfer(SENSOR_I2C,
+        addr, DL_I2C_CONTROLLER_DIRECTION_TX, 1);
+    bme280_wait_bus_free();
+
+    if (DL_I2C_getControllerStatus(SENSOR_I2C)
+        & DL_I2C_CONTROLLER_STATUS_ERROR) {
+        return 0; /* NACK — no sensor at this address */
+    }
+
+    /* Read chip ID */
+    bme280_wait_idle();
+    DL_I2C_startControllerTransfer(SENSOR_I2C,
+        addr, DL_I2C_CONTROLLER_DIRECTION_RX, 1);
+    while (DL_I2C_isControllerRXFIFOEmpty(SENSOR_I2C)) {
+    }
+    *chipId = DL_I2C_receiveControllerData(SENSOR_I2C);
+    bme280_wait_bus_free();
+
     return (*chipId == BME280_CHIP_ID_VAL);
 }
+
+/* ---- Calibration ---- */
 
 static int bme280_read_calib(void)
 {
@@ -98,6 +156,8 @@ static int bme280_read_calib(void)
     }
     return 0;
 }
+
+/* ---- Public API ---- */
 
 int BME280_Init(void)
 {

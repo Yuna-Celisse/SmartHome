@@ -1,8 +1,30 @@
+/******************************************************************************
+ * @file sensor_opt3001.h
+ *
+ * @par dependencies
+ *      - board_init.h (SENSOR_I2C, delay_cycles)
+ *
+ * @author Yuna-Celisse
+ *
+ * @brief OPT3001 ambient light sensor interface (BOOSTXL-SENSORS).
+ *
+ * The OPT3001 measures visible light intensity in lux. Communication
+ * over I2C1. ADDR pin tied to GND on BOOSTXL-SENSORS → address 0x44.
+ *
+ * Configuration: auto-range, continuous mode, 800ms conversion time,
+ * latched window-style comparison.
+ *
+ * @version V1.1 2026-6-20
+ *
+ * @note 1 tab == 4 spaces!
+ *****************************************************************************/
+
 #ifndef SENSOR_OPT3001_H
 #define SENSOR_OPT3001_H
 
 #include "board_init.h"
 
+/* BOOSTXL-SENSORS: ADDR = GND → 0x44 */
 #define OPT3001_I2C_ADDR      0x44
 
 /* OPT3001 registers */
@@ -13,18 +35,31 @@
 #define OPT3001_REG_MANUFACTURER   0x7E
 #define OPT3001_REG_DEVICE_ID      0x7F
 
-/* Configuration */
-#define OPT3001_CONFIG_AUTO_RANGE  0x0C00  /* automatic full-scale range */
-#define OPT3001_CONFIG_CONT_MODE   0x0600  /* continuous conversion */
-#define OPT3001_CONFIG_CONV_800MS  0x0800  /* 800ms conversion time */
+/* Configuration value (0xCE10): auto-range, continuous, 800ms, latch */
+#define OPT3001_CONFIG_VALUE_MSB   0xCE
+#define OPT3001_CONFIG_VALUE_LSB   0x10
 
-/* Expected IDs */
-#define OPT3001_MANUFACTURER_ID    0x5449
-#define OPT3001_DEVICE_ID_VAL      0x3001
+/**
+ * @brief  Initialize OPT3001: configure auto-range continuous mode.
+ *
+ * Uses raw DL I2C API to write the 16-bit configuration register,
+ * bypassing Board_I2C_Write which produces corrupted register values
+ * on this board.
+ *
+ * @return 0 on success, -1 on I2C error.
+ */
+int OPT3001_Init(void);
 
-int   OPT3001_Init(void);
+/**
+ * @brief  Read ambient light intensity in lux.
+ *
+ * Reads the 16-bit result register (0x00) via raw DL I2C and converts
+ * using the OPT3001 formula: lux = mantissa × 2^exponent × 0.01.
+ *
+ * Range: 0.01 to 83865 lux (auto-range).
+ *
+ * @return Illuminance in lux.
+ */
 float OPT3001_ReadLux(void);
-uint16_t OPT3001_ReadManufacturerID(void);
-uint16_t OPT3001_ReadDeviceID(void);
 
 #endif /* SENSOR_OPT3001_H */

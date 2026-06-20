@@ -19,20 +19,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 设备 | I2C 地址 | 型号 | 说明 |
 |------|---------|------|------|
 | BMI160 | 0x69 | Bosch 6 轴 IMU | ✓ 3 轴陀螺仪 (GYR_NORMAL 模式, ±2000°/s, 16.384 LSB/°/s) |
-| TMP007 | 0x47 | TI 红外热电堆 | 红外物体温度 (14-bit, 0.0078125 °C/LSB 实测) |
 | BME280 | 0x77 | Bosch 温湿度/气压 | ✓ 环境温度 (自动探测 0x77/0x76, 影子锁存+重试) |
-| OPT3001 | — | TI 环境光 | 未检测到（上电问题） |
-| BMM150 | — | Bosch 地磁 | 未检测到 |
+| OPT3001 | 0x44 | TI 环境光 | ✓ 照度 (ADDR=GND, 自动量程+连续模式) |
 
 **传感器使能引脚**（由 `Board_Sensor_Enable()` 配置）：
 
 | 引脚 | 功能 | 有效电平 |
 |------|------|---------|
-| PB24 | HDC2010 电源 (BASSENSORS 兼容) | LOW |
-| PA22 | DRV5055 电源 (BASSENSORS 兼容) | LOW |
+| PB24 | 保留 (BASSENSORS HDC2010 兼容) | LOW |
+| PA22 | 保留 (BASSENSORS DRV5055 兼容) | LOW |
 | PA24 | OPT3001 电源 | HIGH |
 
-> **注意**：BOOSTXL-SENSORS 与 BOOSTXL-BASSENSORS 是不同的板子。部分传感器驱动（HDC2010/TMP116）是从 BASSENSORS 模板创建的，在此板上不可用。
+> **注意**：BOOSTXL-SENSORS 与 BOOSTXL-BASSENSORS 是不同的板子。HDC2010/TMP116/DRV5055 驱动已移除，仅保留 BOOSTXL-SENSORS 板载的 3 个传感器 + 语音模块。
 
 ## 构建命令
 
@@ -64,7 +62,7 @@ CCS Theia 的调试配置由 GUI 生成，**不在仓库中维护** `.ccxml`、`
 ```
 smart_home.syscfg ──SysConfig──▶ ti_msp_dl_config.c/h   (外设初始化，自动生成，勿手动改)
 app/board_init.c/h               (板级抽象：I2C/ADC/UART/LED，DL API 集中层)
-app/sensors/sensor_*.c/h         (传感器驱动：BMI160/BME280/TMP007/HDC2010/OPT3001/DRV5055)
+app/sensors/sensor_*.c/h         (传感器驱动：BMI160/BME280/OPT3001)
 app/voice_protocol.c/h           (语音模块 5 字节协议解析与命令分发)
 app/main.c                       (中断驱动 UART 转发 + ~50Hz BMI160 陀螺仪 + FireWater CSV 上报)
 ```
@@ -79,15 +77,13 @@ app/main.c                       (中断驱动 UART 转发 + ~50Hz BMI160 陀螺
 - **`sensors/`**：
   | 驱动 | 状态 | 说明 |
   |------|------|------|
-  | `sensor_bme280` | ✓ 工作 | I2C 0x77 (TI 板默认, 自动探测 0x76), Chip ID 0x60, 8 字节影子锁存突发读取 + MSB 验证 + 最多 5 次重试, 寄存器写入使用原始 DL I2C API（Board_I2C_WriteReg 在此板上会产生损坏值） |
-  | `sensor_bmi160` | ✓ 工作 | I2C 0x69, Chip ID 0xD1, 3 轴陀螺仪 GYR_NORMAL 模式, 灵敏度 16.384 LSB/°/s (默认 ±2000°/s), 6 字节单次读取 + 50µs 间隔 |
-  | `sensor_tmp007` | ✓ 可读 | I2C 0x47, MFR ID 0x5449, 温度 14-bit 有符号, LSB=0.0078125°C 实测。**连续模式不可用**——16 位 config 寄存器写失败，传感器停留在单次转换模式 |
-  | `sensor_hdc2010` | ✗ 不可用 | 针对 BASSENSORS 编写，0x40 在此板上为无效地址，写操作污染 I2C 总线 |
-  | `sensor_tmp116` | ✗ 不可用 | 针对 BASSENSORS 编写，在此板上未检测到 |
+  | `sensor_bmi160` | ✓ 工作 | I2C 0x69, Chip ID 0xD1, 3 轴陀螺仪 GYR_NORMAL 模式, 灵敏度 16.384 LSB/°/s, 原始 DL I2C 读写 + 6 字节单次读取 + 50µs 间隔 |
+  | `sensor_bme280` | ✓ 工作 | I2C 0x77 (TI 板默认, 自动探测 0x76), Chip ID 0x60, 全部使用原始 DL I2C API 读写, 8 字节影子锁存突发读取 + MSB 验证 + 最多 5 次重试 |
+  | `sensor_opt3001` | ✓ 工作 | I2C 0x44 (ADDR=GND), 照度 lux, 原始 DL I2C API, auto-range + continuous + 800ms + latch |
 - **`voice_protocol`**：5 字节协议解析（`AA 55 [type] [cmd] FB`），`Voice_Process_Byte()` 逐字节组包，`Voice_Protocol_Init()` 上电广播。
 - **`main.c`**：
-  - 初始化顺序：`SYSCFG_DL_init()` → `Board_Sensor_Enable()` → `Board_I2C_Init()` → `Board_Sensor_Init()` → UART0/1/3 Init → `Voice_Protocol_Init()` → `BMI160_Init()`
-  - 主循环 @~50Hz：仅读取 BMI160 陀螺仪，通过 UART0 以 FireWater CSV 格式上报
+  - 初始化顺序：`SYSCFG_DL_init()` → `Board_Sensor_Enable()` → `Board_I2C_Init()` → `Board_Sensor_Init()` → UART0/1/3 Init → `Voice_Protocol_Init()` → `BMI160_Init()` → `BME280_Init()` → `OPT3001_Init()`
+  - 主循环 @~50Hz：BMI160 陀螺仪 FireWater CSV 上报；每 1s 读取 BME280 温度 + OPT3001 照度
   - UART0 TX 专用于 FireWater 数据输出（无启动横幅、无温度上报、无回显、无桥接转发）
   - 三路 ISR：UART0 仅接收转发到 UART1，UART1 接收丢弃，UART3 仅协议解析
   - `float_to_str()` 手工格式化浮点数，避免引入 printf 库
@@ -108,10 +104,9 @@ ch0,ch1,ch2\r\n
 
 ## I2C 已知问题
 
-1. **16 位寄存器写**：TMP007 等器件的 16 位配置寄存器无法正确写入。标准 I2C 写 `[reg, MSB, LSB]` 因自动递增将 MSB 写入 reg、LSB 写入 reg+1，导致配置失败。SMBus Word Write（LSB 先）同样无效。TMP007 停留在默认单次转换模式，温度读数不更新。
-2. **8 位寄存器写损坏**：`Board_I2C_WriteReg` 即使对 8 位寄存器也会产生损坏值（BME280 ctrl_meas：写入 0x23 → 读回 0x35）。BME280 驱动改用原始 DL I2C API 直接填充 TX FIFO 并启动传输来绕过此问题。
-3. **多字节读不可靠**：`Board_I2C_ReadReg` 连续读 2+ 字节返回数据不稳定，约 50% 概率出现字节移位/镜像。BMI160 改用单字节读 + 50µs 间隔。BME280 通过 8 字节影子锁存突发读取 + MSB 范围验证 + 最多 5 次重试来保证数据一致性。
-4. **0x40 伪设备**：往地址 0x40 写数据会污染 I2C 总线，导致后续通信失败。已禁用 HDC2010_Init。
+1. **`Board_I2C_WriteReg` 寄存器写损坏**：产生损坏的寄存器值（BME280 ctrl_meas：写入 0x23 → 读回 0x35）。**所有传感器驱动已改用原始 DL I2C API**（`DL_I2C_fillControllerTXFIFO` + `DL_I2C_startControllerTransfer`）直接填充 TX FIFO 并启动传输来绕过此问题。
+2. **`Board_I2C_ReadReg` 多字节读不可靠**：连续读 2+ 字节返回数据不稳定，约 50% 概率出现字节移位/镜像。BMI160 改用单字节读 + 50µs 间隔。BME280 通过 8 字节影子锁存突发读取 + MSB 范围验证 + 最多 5 次重试来保证数据一致性。
+3. **所有新传感器驱动必须使用原始 DL I2C API**，禁止调用 `Board_I2C_Write`/`WriteReg`/`ReadReg`。
 
 ## 第三方代码边界
 
