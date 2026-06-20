@@ -1,0 +1,47 @@
+name: ARM GCC Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ARM GCC
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi
+
+      - name: Build
+        run: |
+          cd ticlang
+          make -f Makefile.gcc -j$(nproc)
+
+      - name: Size check
+        run: arm-none-eabi-size ticlang/smart_home.elf
+
+      - name: Upload hex
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart_home-hex
+          path: ticlang/smart_home.hex
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload elf
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart_home-elf
+          path: ticlang/smart_home.elf
+          if-no-files-found: error
+          retention-days: 7

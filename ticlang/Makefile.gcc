@@ -1,0 +1,101 @@
+# Makefile.gcc — ARM GCC build (for CI / non-TI toolchains)
+# Uses pre-generated ti_msp_dl_config.c/h from repo root.
+# No SysConfig or TI Clang required.
+
+MSPM0_SDK ?= ../mspm0-sdk
+
+CC      = arm-none-eabi-gcc
+OBJCOPY = arm-none-eabi-objcopy
+SIZE    = arm-none-eabi-size
+
+SDK_SRC = $(MSPM0_SDK)/source
+STARTUP = $(SDK_SRC)/ti/devices/msp/m0p/startup_system_files/gcc/startup_mspm0g350x_gcc.c
+LINKER  = $(SDK_SRC)/ti/devices/msp/m0p/linker_files/gcc/mspm0g3507.lds
+LIB_GCC = $(SDK_SRC)/ti/driverlib/lib/gcc/m0p/mspm0g1x0x_g3x0x/driverlib.a
+
+# SysConfig-generated files (pre-committed)
+SYSCFG_C = ../ti_msp_dl_config.c
+SYSCFG_H = ../ti_msp_dl_config.h
+
+# Application sources
+APP_SRC  = ../app/main.c \
+           ../app/board_init.c \
+           ../app/voice_protocol.c \
+           ../app/sensors/sensor_bmi160.c \
+           ../app/sensors/sensor_bme280.c \
+           ../app/sensors/sensor_opt3001.c
+
+APP_INC  = -I.. \
+           -I../app \
+           -I../app/sensors \
+           -I. \
+           -I$(SDK_SRC)/third_party/CMSIS/Core/Include \
+           -I$(SDK_SRC)
+
+CFLAGS   = -mcpu=cortex-m0plus \
+           -mthumb \
+           -mfloat-abi=soft \
+           -O2 \
+           -Wall \
+           -ffunction-sections \
+           -fdata-sections \
+           -DDeviceFamily_MSPM0G350X \
+           -D__MSPM0G3507__ \
+           $(APP_INC)
+
+LDFLAGS  = -mcpu=cortex-m0plus \
+           -mthumb \
+           -mfloat-abi=soft \
+           -T$(LINKER) \
+           -Wl,--gc-sections \
+           -Wl,--print-memory-usage \
+           -nostartfiles
+
+OBJS = main.o board_init.o voice_protocol.o \
+       sensor_bmi160.o sensor_bme280.o sensor_opt3001.o \
+       startup.o ti_msp_dl_config.o
+
+NAME = smart_home
+
+.PHONY: all clean
+
+all: $(NAME).elf $(NAME).hex
+	$(SIZE) $(NAME).elf
+
+# Startup
+startup.o: $(STARTUP) $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# SysConfig
+ti_msp_dl_config.o: $(SYSCFG_C) $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# App sources
+main.o: ../app/main.c $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+board_init.o: ../app/board_init.c $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+voice_protocol.o: ../app/voice_protocol.c $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+sensor_bmi160.o: ../app/sensors/sensor_bmi160.c $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+sensor_bme280.o: ../app/sensors/sensor_bme280.c $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+sensor_opt3001.o: ../app/sensors/sensor_opt3001.c $(SYSCFG_H)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Link
+$(NAME).elf: $(OBJS)
+	$(CC) $(LDFLAGS) $(OBJS) $(LIB_GCC) -o $@
+
+# Hex
+$(NAME).hex: $(NAME).elf
+	$(OBJCOPY) -O ihex $< $@
+
+clean:
+	rm -f *.o *.elf *.hex *.map
