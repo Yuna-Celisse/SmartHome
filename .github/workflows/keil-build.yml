@@ -21,7 +21,7 @@ jobs:
     runs-on: [self-hosted, Windows, keil]
 
     env:
-      KEIL_UV4: C:\Keil_v5\UV4\UV4.exe
+      KEIL_UV4: C:\Users\YunaCelisse\AppData\Local\Keil_v5\UV4\UV4.exe
       PROJECT: keil\smart_home.uvprojx
       TARGET: smart_home
 
