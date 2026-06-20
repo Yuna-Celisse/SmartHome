@@ -11,16 +11,19 @@
  *
  * Receives raw bytes from the voice UART (UART3), assembles 5-byte
  * packets of the form AA 55 [type] [cmd] FB, and dispatches:
- *   - ALARM (0x26): toggle LED + send acknowledgment
+ *   - LIGHT_ON  (0x01): manual mode, LED on, send ack
+ *   - LIGHT_OFF (0x02): manual mode, LED off, send ack
+ *   - ALARM     (0x26): set alarm firing state, send ack
  *   - Other valid packets: echo the command byte back on the voice UART
  *   - Invalid packets (wrong header/footer): silently discarded
  *
- * @version V1.0 2026-6-18
+ * @version V1.1 2026-6-20
  *
  * @note 1 tab == 4 spaces!
  *****************************************************************************/
 
 #include "voice_protocol.h"
+#include "system_state.h"
 
 /**
  * 5-byte receive buffer — filled one byte at a time by
@@ -97,14 +100,37 @@ void Voice_Process_Byte(uint8_t ch)
             /**
              * Dispatch based on command byte.
              */
-            if (cmd == VOICE_CMD_ALARM) {
+            if (cmd == VOICE_CMD_LIGHT_ON) {
                 /**
-                 * ALARM: toggle the board LED and send an
-                 * acknowledgment packet with the same type
-                 * and command bytes.
+                 * LIGHT ON: set manual mode so auto-light
+                 * does not override, turn LED on, and send
+                 * acknowledgment.
                  */
-                LED_TOGGLE();
+                g_light_mode = LIGHT_MODE_MANUAL;
+                g_light_on   = true;
+                LED_ON();
                 voice_send_packet(type, cmd);
+
+            } else if (cmd == VOICE_CMD_LIGHT_OFF) {
+                /**
+                 * LIGHT OFF: set manual mode so auto-light
+                 * does not override, turn LED off, and send
+                 * acknowledgment.
+                 */
+                g_light_mode = LIGHT_MODE_MANUAL;
+                g_light_on   = false;
+                LED_OFF();
+                voice_send_packet(type, cmd);
+
+            } else if (cmd == VOICE_CMD_ALARM) {
+                /**
+                 * ALARM: set alarm firing state. The main
+                 * loop handles LED blink timing and cooldown.
+                 * Send acknowledgment.
+                 */
+                g_alarm_state = ALARM_FIRING;
+                voice_send_packet(type, cmd);
+
             } else {
                 /**
                  * Other recognized commands: echo the

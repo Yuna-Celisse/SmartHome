@@ -1,6 +1,9 @@
 #include "ti_msp_dl_config.h"
 #include "board_init.h"
+#include "system_state.h"
 #include "sensors/sensor_opt3001.h"
+#include "sensors/sensor_bmi160.h"
+#include "sensors/sensor_bme280.h"
 #include "voice_protocol.h"
 
 /**
@@ -8,7 +11,7 @@
  *
  * Fires on every received byte (RX FIFO threshold = 1 entry).
  * Each byte is forwarded to UART1 (ESP8266) for AT command processing.
- * No local echo — UART0 TX is reserved for FireWater lux frames.
+ * No local echo — UART0 TX is reserved for FireWater frames.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
@@ -54,7 +57,7 @@ void UART1_IRQHandler(void)
  * Fires on every byte received from the voice module on UART3 (PB12/PB13).
  * Each byte is fed into Voice_Process_Byte() for 5-byte protocol parsing.
  * Raw bytes are NOT forwarded to UART0 — UART0 TX is reserved for
- * FireWater lux frames.
+ * FireWater frames.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
@@ -112,6 +115,19 @@ static void delay_ms(uint32_t ms)
     }
 }
 
+/* ========== Global system state ========== */
+LightMode   g_light_mode           = LIGHT_MODE_AUTO;
+bool        g_light_on             = false;
+FanLevel    g_fan_level            = FAN_OFF;
+uint8_t     g_fan_duty             = FAN_DUTY_OFF;
+AlarmState  g_alarm_state          = ALARM_NORMAL;
+uint32_t    g_alarm_cooldown_ms    = 0;
+float       g_last_lux             = 0.0f;
+float       g_last_temp            = 25.0f;
+float       g_last_gyro_x          = 0.0f;
+float       g_last_gyro_y          = 0.0f;
+float       g_last_gyro_z          = 0.0f;
+
 int main(void)
 {
     SYSCFG_DL_init();
@@ -161,38 +177,195 @@ int main(void)
     delay_ms(200);
     LED_OFF();
 
-    /* Initialize OPT3001 ambient light sensor */
+    /**
+     * Initialize all three sensors and fan PWM.
+     * If any sensor fails, enter infinite error blink
+     * (rapid 100ms on/off on the LED).
+     */
     int opt3001_ok = (OPT3001_Init() == 0);
+    int bme280_ok  = (BME280_Init()  == 0);
+    int bmi160_ok  = (BMI160_Init()  == 0);
+    Board_Fan_Init();
 
-    /* Error indication: rapid LED blink if sensor init failed */
-    if (!opt3001_ok) {
+    if (!opt3001_ok || !bme280_ok || !bmi160_ok) {
         while (1) {
             LED_ON();  delay_ms(100);
             LED_OFF(); delay_ms(100);
         }
     }
 
+    /**
+     * Main loop: tick-based cooperative scheduler.
+     *
+     * Each iteration adds LOOP_DELAY_MS (10ms) to system_tick.
+     * Per-sensor last_*_ms timestamps track when each task last
+     * ran, enabling independent intervals: gyro @100ms,
+     * light @800ms, temp @1000ms, FireWater lux @1000ms.
+     * Unsigned subtraction handles uint32_t wrap correctly
+     * for intervals under ~24 days.
+     */
+#define LOOP_DELAY_MS               10u
+#define BMI160_INTERVAL_MS          100u
+#define OPT3001_INTERVAL_MS         100u  /* 10Hz, matches HW 100ms conversion */
+#define BME280_INTERVAL_MS          1000u
+#define FIREWATER_INTERVAL_MS       1000u
+#define ALARM_BLINK_INTERVAL_MS     100u
+
+    uint32_t system_tick      = 0;
+    uint32_t last_gyro_ms     = 0;
+    uint32_t last_light_ms    = 0;
+    uint32_t last_temp_ms     = 0;
+    uint32_t last_uart_ms     = 0;
+
     while (1) {
-        /* ---- OPT3001: ambient light @ ~1.25Hz → FireWater ---- */
-        float lux = OPT3001_ReadLux();
+        system_tick += LOOP_DELAY_MS;
 
-        /*
-         * VOFA+ FireWater frame (single channel):
-         *   lux\r\n
-         */
-        char buf_lux[8];
-        float_to_str(lux, buf_lux);
+        /* ===== BMI160: gyroscope vibration detection @100ms ===== */
+        if ((system_tick - last_gyro_ms) >= BMI160_INTERVAL_MS) {
+            last_gyro_ms = system_tick;
 
-        char line[16];
-        char *p = line;
-        const char *s = buf_lux;
-        while (*s) *p++ = *s++;
-        *p++ = '\r';
-        *p++ = '\n';
-        *p = '\0';
+            float gx, gy, gz;
+            BMI160_ReadGyro(&gx, &gy, &gz);
+            g_last_gyro_x = gx;
+            g_last_gyro_y = gy;
+            g_last_gyro_z = gz;
 
-        Board_UART_WriteString(UART_DEBUG_INST, line);
+            /* Trigger alarm if any axis exceeds threshold
+             * AND cooldown period has elapsed */
+            if ((gx >  GYRO_ALARM_THRESHOLD_DPS ||
+                 gx < -GYRO_ALARM_THRESHOLD_DPS ||
+                 gy >  GYRO_ALARM_THRESHOLD_DPS ||
+                 gy < -GYRO_ALARM_THRESHOLD_DPS ||
+                 gz >  GYRO_ALARM_THRESHOLD_DPS ||
+                 gz < -GYRO_ALARM_THRESHOLD_DPS) &&
+                (system_tick - g_alarm_cooldown_ms) >= ALARM_COOLDOWN_MS) {
 
-        delay_ms(800); /* OPT3001 continuous mode: 800ms/conversion */
+                g_alarm_state       = ALARM_FIRING;
+                g_alarm_cooldown_ms = system_tick;
+            }
+        }
+
+        /* ===== OPT3001: ambient light auto-control @800ms ===== */
+        if ((system_tick - last_light_ms) >= OPT3001_INTERVAL_MS) {
+            last_light_ms = system_tick;
+
+            float lux = OPT3001_ReadLux();
+            g_last_lux = lux;
+
+            /*
+             * Auto-light control: only applies when mode is AUTO.
+             * Hysteresis prevents flicker near the threshold:
+             *   lux < 50  → turn ON
+             *   lux > 100 → turn OFF
+             *   between   → keep current state
+             *
+             * IMPORTANT: lux == 0.0f is the I2C error sentinel
+             * from OPT3001_ReadLux() (all retries exhausted).
+             * Never use it for auto-light decisions — a bogus
+             * "dark" reading would turn the light on and keep
+             * it on indefinitely.
+             */
+            if (g_light_mode == LIGHT_MODE_AUTO && lux > 0.0f) {
+                if (lux < LIGHT_ON_THRESHOLD_LUX) {
+                    g_light_on = true;
+                } else if (lux > LIGHT_OFF_THRESHOLD_LUX) {
+                    g_light_on = false;
+                }
+                /* Between 50 and 100 lux: maintain previous state */
+            }
+        }
+
+        /* ===== BME280: temperature → fan speed @1000ms ===== */
+        if ((system_tick - last_temp_ms) >= BME280_INTERVAL_MS) {
+            last_temp_ms = system_tick;
+
+            float temp = BME280_ReadTemperature();
+            g_last_temp = temp;
+
+            /* Map temperature to fan level with hysteresis */
+            FanLevel newLevel;
+            uint8_t  newDuty;
+
+            if (temp < TEMP_FAN_OFF_THRESHOLD) {
+                newLevel = FAN_OFF;
+                newDuty  = FAN_DUTY_OFF;
+            } else if (temp < TEMP_FAN_LOW_THRESHOLD) {
+                newLevel = FAN_LOW;
+                newDuty  = FAN_DUTY_LOW;
+            } else if (temp < TEMP_FAN_MED_THRESHOLD) {
+                newLevel = FAN_MED;
+                newDuty  = FAN_DUTY_MED;
+            } else if (temp < TEMP_FAN_HIGH_THRESHOLD) {
+                newLevel = FAN_HIGH;
+                newDuty  = FAN_DUTY_HIGH;
+            } else {
+                newLevel = FAN_MAX;
+                newDuty  = FAN_DUTY_MAX;
+            }
+
+            /* Only update PWM when fan level actually changes */
+            if (newLevel != g_fan_level) {
+                g_fan_level = newLevel;
+                g_fan_duty  = newDuty;
+                Board_Fan_SetDuty(newDuty);
+            }
+        }
+
+        /* ===== FireWater lux output @1000ms ===== */
+        if ((system_tick - last_uart_ms) >= FIREWATER_INTERVAL_MS) {
+            last_uart_ms = system_tick;
+
+            /*
+             * VOFA+ FireWater frame (single channel):
+             *   lux\r\n
+             */
+            char buf_lux[8];
+            float_to_str(g_last_lux, buf_lux);
+
+            char line[16];
+            char *p = line;
+            const char *s = buf_lux;
+            while (*s) *p++ = *s++;
+            *p++ = '\r';
+            *p++ = '\n';
+            *p = '\0';
+
+            Board_UART_WriteString(UART_DEBUG_INST, line);
+        }
+
+        /* ===== LED output state machine (every iteration) ===== */
+        if (g_alarm_state == ALARM_FIRING) {
+            /*
+             * Alarm active: 5Hz blink overrides light state.
+             * De-escalate after ALARM_COOLDOWN_MS (5s).
+             */
+            if ((system_tick - g_alarm_cooldown_ms)
+                >= ALARM_COOLDOWN_MS) {
+                /* Alarm period expired — restore light state */
+                g_alarm_state = ALARM_NORMAL;
+                if (g_light_on) {
+                    LED_ON();
+                } else {
+                    LED_OFF();
+                }
+            } else {
+                /* Still in alarm: 5Hz blink */
+                if (((system_tick / ALARM_BLINK_INTERVAL_MS) & 1u) == 0) {
+                    LED_ON();
+                } else {
+                    LED_OFF();
+                }
+            }
+        } else {
+            /* Normal mode: LED follows g_light_on */
+            if (g_light_on) {
+                LED_ON();
+            } else {
+                LED_OFF();
+            }
+        }
+
+        /* Base loop delay: 10ms per iteration */
+        delay_ms(LOOP_DELAY_MS);
     }
 }

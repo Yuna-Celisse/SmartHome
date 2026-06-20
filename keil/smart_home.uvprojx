@@ -430,6 +430,31 @@
               <FilePath>../app/sensors/sensor_opt3001.h</FilePath>
             </File>
             <File>
+              <FileName>sensor_bmi160.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/sensors/sensor_bmi160.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_bmi160.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/sensors/sensor_bmi160.h</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_bme280.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/sensors/sensor_bme280.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_bme280.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/sensors/sensor_bme280.h</FilePath>
+            </File>
+            <File>
+              <FileName>system_state.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/system_state.h</FilePath>
+            </File>
+            <File>
               <FileName>voice_protocol.c</FileName>
               <FileType>1</FileType>
               <FilePath>../app/voice_protocol.c</FilePath>

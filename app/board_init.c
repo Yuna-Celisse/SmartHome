@@ -482,3 +482,73 @@ uint16_t Board_ADC_Read(void)
 
     return DL_ADC12_getMemResult(DRV5055_ADC, DRV5055_ADC_MEM_IDX);
 }
+
+/* ---- TIMA0 PWM fan control ---- */
+
+void Board_Fan_Init(void)
+{
+    /*
+     * Step 1: Configure PA1 pinmux to TIMA0_CCP1.
+     * PA1 = IOMUX PINCM2, alternate function 4 = TIMA0_CCP1.
+     */
+    DL_GPIO_initPeripheralOutputFunction(FAN_PWM_IOMUX,
+        FAN_PWM_IOMUX_FUNC);
+    DL_GPIO_enableOutput(GPIOA, DL_GPIO_PIN_1);
+
+    /*
+     * Step 2: Reset and power on TIMA0.
+     * Both operations are idempotent — safe to call on an
+     * already-configured peripheral.
+     */
+    DL_TimerA_reset(FAN_PWM_TIM);
+    DL_TimerA_enablePower(FAN_PWM_TIM);
+    delay_cycles(1600); /* ~50 µs analog settle after power-on */
+
+    /*
+     * Step 3: Clock source — BUSCLK @ 32 MHz, no division or prescale.
+     * Timer counter increments at 32 MHz → 31.25 ns resolution.
+     */
+    static const DL_Timer_ClockConfig clockCfg = {
+        .clockSel    = DL_TIMER_CLOCK_BUSCLK,
+        .divideRatio = DL_TIMER_CLOCK_DIVIDE_1,
+        .prescale    = 0
+    };
+    DL_TimerA_setClockConfig(FAN_PWM_TIM, &clockCfg);
+
+    /*
+     * Step 4: Edge-aligned PWM mode, 25 kHz.
+     * period = 32 MHz / 25 kHz = 1280 ticks.
+     * TIMA0 has 4 capture-compare channels (isTimerWithFourCC = true).
+     * Start the timer immediately so PWM output begins.
+     */
+    static const DL_Timer_PWMConfig pwmCfg = {
+        .period             = FAN_PWM_PERIOD,
+        .pwmMode            = DL_TIMER_PWM_MODE_EDGE_ALIGN,
+        .isTimerWithFourCC  = true,
+        .startTimer         = DL_TIMER_START
+    };
+    DL_TimerA_initPWMMode(FAN_PWM_TIM, &pwmCfg);
+
+    /*
+     * Step 5: Ensure fan starts at 0 % duty.
+     * Edge-aligned: LOAD = period, CC = 0 means always 0 output.
+     */
+    Board_Fan_SetDuty(0); /* 0 % duty = fan off */
+}
+
+void Board_Fan_SetDuty(uint8_t percent)
+{
+    if (percent > 100) {
+        percent = 100;
+    }
+
+    /*
+     * Edge-aligned PWM duty calculation:
+     *   ccVal = period * duty / 100
+     * For period = 1280, 25% → 320, 50% → 640, etc.
+     * CC0 = period (set by initPWMMode), CC1 controls PA1 output.
+     */
+    uint32_t ccVal = ((uint32_t)percent * FAN_PWM_PERIOD) / 100u;
+    DL_TimerA_setCaptureCompareValue(FAN_PWM_TIM, ccVal,
+        (DL_TIMER_CC_INDEX)FAN_PWM_CC_INDEX);
+}

@@ -175,4 +175,29 @@ void Board_UART_WriteString(UART_Regs *uart, const char *str);
 #define LED_OFF()     DL_GPIO_setPins(LED_PORT, LED_PIN)
 #define LED_TOGGLE()  DL_GPIO_togglePins(LED_PORT, LED_PIN)
 
+/* ---- TIMA0 PWM on PA1 (fan speed control) ---- */
+#define FAN_PWM_TIM                                 TIMA0
+#define FAN_PWM_CC_INDEX                            DL_TIMERA_CAPTURE_COMPARE_1_INDEX
+#define FAN_PWM_IOMUX                               (IOMUX_PINCM2)
+#define FAN_PWM_IOMUX_FUNC                          IOMUX_PINCM2_PF_TIMA0_CCP1
+#define FAN_PWM_FREQ_HZ                             25000u
+#define FAN_PWM_PERIOD                              1280u   /* 32MHz / 25kHz */
+
+/**
+ * @brief  Initialize TIMA0 in edge-aligned PWM mode on PA1.
+ *
+ * Configures PA1 pinmux to TIMA0_CCP1, resets and powers on
+ * the timer peripheral, sets BUSCLK clock source at 32 MHz with
+ * no division or prescale, and starts PWM output with 0% duty.
+ *
+ * Call once during board bring-up, after SYSCFG_DL_init().
+ */
+void Board_Fan_Init(void);
+
+/**
+ * @brief  Set fan PWM duty cycle on PA1 (TIMA0 CCP1).
+ * @param[in] percent  Duty cycle 0–100 (clamped). 0 = off, 100 = full speed.
+ */
+void Board_Fan_SetDuty(uint8_t percent);
+
 #endif /* BOARD_INIT_H */

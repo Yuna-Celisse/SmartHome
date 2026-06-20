@@ -31,6 +31,8 @@
 #define VOICE_PKT_FOOTER        0xFB
 
 /* ---- Command bytes ---- */
+#define VOICE_CMD_LIGHT_ON      0x01   /**< Voice: turn light on  */
+#define VOICE_CMD_LIGHT_OFF     0x02   /**< Voice: turn light off */
 #define VOICE_CMD_ALARM         0x26
 #define VOICE_CMD_INIT          0x67
 
