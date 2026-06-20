@@ -18,7 +18,7 @@ on:
 jobs:
   build:
     name: Build (MDK540 + ARMCC 6.22)
-    runs-on: [self-hosted, Windows, keil]
+    runs-on: [self-hosted, Windows]
 
     env:
       KEIL_UV4: C:\Users\YunaCelisse\AppData\Local\Keil_v5\UV4\UV4.exe
