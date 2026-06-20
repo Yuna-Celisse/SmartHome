@@ -1,6 +1,8 @@
 #include "ti_msp_dl_config.h"
 #include "board_init.h"
 #include "sensors/sensor_bmi160.h"
+#include "sensors/sensor_bme280.h"
+#include "sensors/sensor_opt3001.h"
 #include "voice_protocol.h"
 
 /**
@@ -117,7 +119,7 @@ int main(void)
     SYSCFG_DL_init();
 
     /**
-     * Power on BOOSTXL-BASSENSORS sensors FIRST.
+     * Power on BOOSTXL-SENSORS sensors FIRST.
      * The sensor power rail also supplies the I2C pull-up
      * resistors — pull-up voltage must be present before
      * the I2C peripheral is initialized.
@@ -136,35 +138,24 @@ int main(void)
 
     /**
      * Initialize UART0 (PA10/PA11, XDS110 back-channel).
-     * Board_UART0_Init() enables the UART RX interrupt at the
-     * peripheral level; NVIC_EnableIRQ() unmasks it at the core level.
-     * Order matters: peripheral interrupt must be unmasked BEFORE the
-     * NVIC, or an edge-triggered IRQ could be missed.
      */
     Board_UART0_Init(UART_DEBUG_BAUD);
     NVIC_EnableIRQ(UART0_INT_IRQn);
 
     /**
      * Initialize UART1 (ESP8266 WiFi module, PB6/PB7).
-     * UART0 RX → UART1 TX forwarding is handled by UART0_IRQHandler.
-     * UART1 RX is received but not forwarded — UART0 TX is reserved
-     * for FireWater gyroscope frames.
+     * UART0 RX → UART1 TX forwarding by UART0_IRQHandler.
+     * UART1 RX discarded — UART0 TX reserved for FireWater.
      */
     Board_UART1_Init(UART_ESP_BAUD);
     NVIC_EnableIRQ(UART1_INT_IRQn);
 
     /**
      * Initialize UART3 (Voice module, PB12/PB13).
-     * Receives 5-byte protocol packets (AA 55 [type] [cmd] FB)
-     * and dispatches commands via Voice_Process_Byte().
      */
     Board_UART3_Init(UART_VOICE_BAUD);
     NVIC_EnableIRQ(UART3_INT_IRQn);
 
-    /**
-     * Send the init broadcast packet on the voice UART to notify
-     * any connected voice modules that the MCU is ready.
-     */
     Voice_Protocol_Init();
 
     /* Power-on LED indication: brief flash */
@@ -172,11 +163,17 @@ int main(void)
     delay_ms(200);
     LED_OFF();
 
-    /* Initialize BMI160 gyroscope */
-    int bmi160_ok = (BMI160_Init() == 0);
+    /* Initialize sensors: BMI160 gyro, BME280 temp, OPT3001 lux */
+    int bmi160_ok  = (BMI160_Init() == 0);
+    int bme280_ok  = (BME280_Init() == 0);
+    int opt3001_ok = (OPT3001_Init() == 0);
+
+    float temp  = 0.0f;
+    float lux   = 0.0f;
+    uint32_t cycle = 0;
 
     while (1) {
-        /* ---- BMI160: Gyroscope 3-axis angular rate (°/s) ---- */
+        /* ---- BMI160: Gyroscope @ ~50Hz → FireWater CSV ---- */
         if (bmi160_ok) {
             float gx, gy, gz;
             BMI160_ReadGyro(&gx, &gy, &gz);
@@ -184,8 +181,6 @@ int main(void)
             /*
              * VOFA+ FireWater CSV frame:
              *   ch0,ch1,ch2\r\n
-             *   FireWater is a text protocol: comma-separated
-             *   float strings, CRLF-terminated.
              */
             char buf_gx[8], buf_gy[8], buf_gz[8];
             float_to_str(gx, buf_gx);
@@ -206,6 +201,16 @@ int main(void)
             *p = '\0';
 
             Board_UART_WriteString(UART_DEBUG_INST, line);
+        }
+
+        /* ---- BME280 + OPT3001: read every ~1s (50 cycles × 20ms) ---- */
+        cycle++;
+        if (cycle >= 50) {
+            cycle = 0;
+            if (bme280_ok)  { temp = BME280_ReadTemperature(); }
+            if (opt3001_ok) { lux  = OPT3001_ReadLux(); }
+            (void)temp;
+            (void)lux;
         }
 
         delay_ms(20); /* ~50Hz */
