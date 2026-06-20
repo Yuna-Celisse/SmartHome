@@ -1,0 +1,87 @@
+name: Keil MDK Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'keil/**'
+      - '.github/workflows/keil-build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'keil/**'
+      - '.github/workflows/keil-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (MDK540 + ARMCC 6.22)
+    runs-on: [self-hosted, Windows, keil]
+
+    env:
+      KEIL_UV4: C:\Keil_v5\UV4\UV4.exe
+      PROJECT: keil\smart_home.uvprojx
+      TARGET: smart_home
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify Keil installation
+        shell: cmd
+        run: |
+          if not exist "%KEIL_UV4%" (
+            echo ERROR: Keil MDK not found at %KEIL_UV4%
+            echo Install Keil MDK 5.40 from https://www.keil.com/demo/eval/arm.htm
+            echo MSPM0G3507 (Cortex-M0+) is supported by Keil Community Edition (free, <32KB)
+            exit 1
+          )
+          "%KEIL_UV4%" -V
+
+      - name: Rebuild
+        id: build
+        shell: cmd
+        run: |
+          echo Building %PROJECT% [%TARGET%]...
+          "%KEIL_UV4%" -r "%PROJECT%" -t "%TARGET%" -j0 -o keil/build.log
+          echo UV4_EXIT=%ERRORLEVEL%>>"%GITHUB_OUTPUT%"
+
+      - name: Check result
+        shell: cmd
+        run: |
+          set UV4_EXIT=${{ steps.build.outputs.UV4_EXIT }}
+          echo Keil UV4 exit code: %UV4_EXIT%
+          echo.
+          echo === Build Log ===
+          type keil\build.log
+          echo === End ===
+          if %UV4_EXIT% GTR 1 (
+            echo BUILD FAILED
+            exit /b 1
+          )
+          if %UV4_EXIT% EQU 1 (
+            echo BUILD OK (with warnings)
+          ) else (
+            echo BUILD OK
+          )
+
+      - name: Upload hex
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart_home-hex
+          path: keil/Objects/smart_home.hex
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: keil/build.log
+          if-no-files-found: ignore
+          retention-days: 7
