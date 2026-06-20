@@ -15,8 +15,9 @@
  * corrupted register values on this board (see CLAUDE.md I2C 已知问题).
  *
  * Configuration: 0xCE10 = auto-range + continuous + 800ms + latch.
+ * I2C address: 0x47 (ADDR pin tied to SCL on BOOSTXL-SENSORS).
  *
- * @version V1.1 2026-6-20
+ * @version V1.2 2026-6-20
  *
  * @note 1 tab == 4 spaces!
  *****************************************************************************/
@@ -25,9 +26,9 @@
 #include "ti_msp_dl_config.h" /* DL_I2C API, delay_cycles */
 
 /* ---- I2C packet sizes ---- */
-#define OPT_I2C_TX_INIT_SIZE      (3)   /* [reg=0x01, msb=0xCE, lsb=0x10] */
-#define OPT_I2C_READSEND_SIZE     (1)   /* [reg=0x00] */
-#define OPT_I2C_READRECEIVE_SIZE  (2)   /* [msb, lsb] */
+#define OPT_I2C_TX_INIT_SIZE         (3)
+#define OPT_I2C_READSEND_SIZE        (1)
+#define OPT_I2C_READRECEIVE_SIZE     (2)
 
 /* ---- Pre-built I2C packets ---- */
 static const uint8_t opt_config_packet[OPT_I2C_TX_INIT_SIZE] = {
@@ -109,9 +110,15 @@ float OPT3001_ReadLux(void)
 
     opt_wait_bus_free();
 
-    /* ---- Step 2: Read 2-byte result ---- */
+    if (DL_I2C_getControllerStatus(SENSOR_I2C)
+        & DL_I2C_CONTROLLER_STATUS_ERROR) {
+        opt_wait_idle();
+        return 0.0f;
+    }
+
     opt_wait_idle();
 
+    /* ---- Step 2: Read 2-byte result ---- */
     DL_I2C_startControllerTransfer(SENSOR_I2C,
         OPT3001_I2C_ADDR,
         DL_I2C_CONTROLLER_DIRECTION_RX,
@@ -124,6 +131,11 @@ float OPT3001_ReadLux(void)
     }
 
     opt_wait_bus_free();
+
+    if (DL_I2C_getControllerStatus(SENSOR_I2C)
+        & DL_I2C_CONTROLLER_STATUS_ERROR) {
+        return 0.0f;
+    }
 
     /*
      * Convert raw value to lux.

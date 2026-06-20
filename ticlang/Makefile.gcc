@@ -21,8 +21,6 @@ SYSCFG_H = ../ti_msp_dl_config.h
 APP_SRC  = ../app/main.c \
            ../app/board_init.c \
            ../app/voice_protocol.c \
-           ../app/sensors/sensor_bmi160.c \
-           ../app/sensors/sensor_bme280.c \
            ../app/sensors/sensor_opt3001.c
 
 APP_INC  = -I.. \
@@ -52,7 +50,7 @@ LDFLAGS  = -mcpu=cortex-m0plus \
            -nostartfiles
 
 OBJS = main.o board_init.o voice_protocol.o \
-       sensor_bmi160.o sensor_bme280.o sensor_opt3001.o \
+       sensor_opt3001.o \
        startup.o ti_msp_dl_config.o
 
 NAME = smart_home
@@ -78,12 +76,6 @@ board_init.o: ../app/board_init.c $(SYSCFG_H)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 voice_protocol.o: ../app/voice_protocol.c $(SYSCFG_H)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-sensor_bmi160.o: ../app/sensors/sensor_bmi160.c $(SYSCFG_H)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-sensor_bme280.o: ../app/sensors/sensor_bme280.c $(SYSCFG_H)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 sensor_opt3001.o: ../app/sensors/sensor_opt3001.c $(SYSCFG_H)

@@ -4,7 +4,7 @@
 
 基于 TI **MSPM0G3507** (Cortex-M0+ @ 32MHz) 的嵌入式多传感器采集系统，运行在 LP-MSPM0G3507 LaunchPad + **BOOSTXL-SENSORS** BoosterPack。
 
-UART0 以 **FireWater 协议** 实时输出 BMI160 陀螺仪数据至 VOFA+ 上位机，同时采集 BME280 环境温度和 OPT3001 光照度。
+UART0 以 **FireWater 协议** 实时输出 OPT3001 光照度数据至 VOFA+ 上位机，同时板载 BME280 环境温度和 BMI160 陀螺仪驱动可用。
 
 ## 硬件
 
@@ -60,20 +60,20 @@ cd ticlang && make -f Makefile.gcc
 
 ## FireWater 输出协议
 
-UART0 (115200 8N1) 以 ~50Hz 频率输出 CSV 格式陀螺仪数据：
+UART0 (115200 8N1) 以 ~1.25Hz 频率输出 CSV 格式光照度数据：
 
 ```
--0.1,0.4,-0.3\r\n
+123.4\r\n
 ```
 
-VOFA+ 配置：协议 FireWater，通道数 3（GX, GY, GZ °/s）。
+VOFA+ 配置：协议 FireWater，通道数 1（lux）。
 
 ## 软件架构
 
 ```
 SmartHome/
 ├── app/
-│   ├── main.c                    # ~50Hz 陀螺仪 + 1Hz 温湿度/照度
+│   ├── main.c                    # ~1.25Hz 光照度 FireWater 上报
 │   ├── board_init.c/h            # I2C/UART/LED 底层驱动
 │   ├── voice_protocol.c/h        # 语音模块 5 字节协议
 │   └── sensors/

@@ -24,8 +24,8 @@
 
 #include "board_init.h"
 
-/* BOOSTXL-SENSORS: ADDR = GND → 0x44 */
-#define OPT3001_I2C_ADDR      0x44
+/* BOOSTXL-SENSORS: ADDR = SCL → 0x47 */
+#define OPT3001_I2C_ADDR      0x47
 
 /* OPT3001 registers */
 #define OPT3001_REG_RESULT         0x00
