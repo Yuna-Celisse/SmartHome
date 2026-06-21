@@ -464,6 +464,16 @@
               <FileType>5</FileType>
               <FilePath>../app/voice_protocol.h</FilePath>
             </File>
+            <File>
+              <FileName>fan_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/fan_control.c</FilePath>
+            </File>
+            <File>
+              <FileName>fan_control.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/fan_control.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

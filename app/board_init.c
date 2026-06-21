@@ -483,72 +483,178 @@ uint16_t Board_ADC_Read(void)
     return DL_ADC12_getMemResult(DRV5055_ADC, DRV5055_ADC_MEM_IDX);
 }
 
-/* ---- TIMA0 PWM fan control ---- */
+/* ---- Fan PWM (TB6612) helpers ---- */
 
+/**
+ * @brief  Initialize fan PWM hardware: TIMA0 CCP3 on PA8,
+ *         direction GPIOs PB0 (AIN1) / PB1 (AIN2).
+ *
+ * Powers on and configures TIMA0 for edge-aligned PWM at 25 kHz
+ * (period = 1280 ticks at 32 MHz BUSCLK). Configures PB0 and PB1
+ * as digital outputs for TB6612 direction control (AIN1 = HIGH,
+ * AIN2 = LOW = forward). The PWM output starts at 0% duty cycle.
+ *
+ * The timer is started and kept running; Board_Fan_SetSpeed()
+ * adjusts the CCP3 compare value to control duty cycle in real time.
+ *
+ * @note  TIMA0 is NOT configured by SysConfig — this function
+ *        handles the full peripheral initialization sequence
+ *        (reset → power → clock → PWM config → start).
+ */
 void Board_Fan_Init(void)
 {
-    /*
-     * Step 1: Configure PA1 pinmux to TIMA0_CCP1.
-     * PA1 = IOMUX PINCM2, alternate function 4 = TIMA0_CCP1.
+    /**
+     * Reset and power on TIMA0. These are idempotent and return void.
+     * A short delay allows the peripheral to stabilize after power-on.
+     */
+    DL_Timer_reset(FAN_PWM_INST);
+    DL_Timer_enablePower(FAN_PWM_INST);
+    delay_cycles(32000);
+
+    /**
+     * Configure PA8 as TIMA0 CCP3 (peripheral output — PWM signal).
+     * PA8 = IOMUX PINCM9, alternate function TIMA0_CCP3.
      */
     DL_GPIO_initPeripheralOutputFunction(FAN_PWM_IOMUX,
         FAN_PWM_IOMUX_FUNC);
-    DL_GPIO_enableOutput(GPIOA, DL_GPIO_PIN_1);
 
-    /*
-     * Step 2: Reset and power on TIMA0.
-     * Both operations are idempotent — safe to call on an
-     * already-configured peripheral.
+    /**
+     * Configure PB0 and PB1 as digital outputs for TB6612 direction
+     * control. AIN1 = HIGH + AIN2 = LOW → forward rotation.
      */
-    DL_TimerA_reset(FAN_PWM_TIM);
-    DL_TimerA_enablePower(FAN_PWM_TIM);
-    delay_cycles(1600); /* ~50 µs analog settle after power-on */
+    DL_GPIO_initDigitalOutput(FAN_AIN1_IOMUX);
+    DL_GPIO_initDigitalOutput(FAN_AIN2_IOMUX);
 
-    /*
-     * Step 3: Clock source — BUSCLK @ 32 MHz, no division or prescale.
-     * Timer counter increments at 32 MHz → 31.25 ns resolution.
+    DL_GPIO_setPins(FAN_AIN1_PORT, FAN_AIN1_PIN);
+    DL_GPIO_clearPins(FAN_AIN2_PORT, FAN_AIN2_PIN);
+
+    /**
+     * Clock source: BUSCLK @ 32 MHz, divide ratio 1, prescaler 0.
+     * Effective timer clock = 32 MHz / (1 * (0+1)) = 32 MHz.
      */
-    static const DL_Timer_ClockConfig clockCfg = {
+    static const DL_Timer_ClockConfig fanClockCfg = {
         .clockSel    = DL_TIMER_CLOCK_BUSCLK,
         .divideRatio = DL_TIMER_CLOCK_DIVIDE_1,
         .prescale    = 0
     };
-    DL_TimerA_setClockConfig(FAN_PWM_TIM, &clockCfg);
+    DL_Timer_setClockConfig(FAN_PWM_INST, &fanClockCfg);
 
-    /*
-     * Step 4: Edge-aligned PWM mode, 25 kHz.
-     * period = 32 MHz / 25 kHz = 1280 ticks.
-     * TIMA0 has 4 capture-compare channels (isTimerWithFourCC = true).
-     * Start the timer immediately so PWM output begins.
+    /**
+     * PWM configuration: edge-aligned down-counting mode.
+     *
+     * At 32 MHz timer clock with period = 1280:
+     *   f_pwm = 32,000,000 / 1280 = 25,000 Hz (inaudible range).
+     *
+     * TIMA0 supports 4 CCP channels (isTimerWithFourCC = true).
+     * The timer is not started yet — duty cycle must be set first.
      */
-    static const DL_Timer_PWMConfig pwmCfg = {
-        .period             = FAN_PWM_PERIOD,
+    static const DL_Timer_PWMConfig fanPwmCfg = {
         .pwmMode            = DL_TIMER_PWM_MODE_EDGE_ALIGN,
+        .period             = FAN_PWM_PERIOD,
         .isTimerWithFourCC  = true,
-        .startTimer         = DL_TIMER_START
+        .startTimer         = DL_TIMER_STOP
     };
-    DL_TimerA_initPWMMode(FAN_PWM_TIM, &pwmCfg);
+    DL_Timer_initPWMMode(FAN_PWM_INST, &fanPwmCfg);
 
-    /*
-     * Step 5: Ensure fan starts at 0 % duty.
-     * Edge-aligned: LOAD = period, CC = 0 means always 0 output.
+    /**
+     * Counter control: use CCCTL3 for zero, advance, and load
+     * condition selection (matches the CCP3 channel in use).
      */
-    Board_Fan_SetDuty(0); /* 0 % duty = fan off */
+    DL_Timer_setCounterControl(FAN_PWM_INST,
+        DL_TIMER_CZC_CCCTL3_ZCOND,
+        DL_TIMER_CAC_CCCTL3_ACOND,
+        DL_TIMER_CLC_CCCTL3_LCOND);
+
+    /**
+     * CCP3 output control: initial value LOW, no output inversion,
+     * source = function value (PWM compare). When the timer is
+     * stopped, the output goes LOW = 0% duty cycle.
+     */
+    DL_Timer_setCaptureCompareOutCtl(FAN_PWM_INST,
+        DL_TIMER_CC_OCTL_INIT_VAL_LOW,
+        DL_TIMER_CC_OCTL_INV_OUT_DISABLED,
+        DL_TIMER_CC_OCTL_SRC_FUNCVAL,
+        DL_TIMER_CC_3_INDEX);
+
+    /**
+     * Immediate update: writes to CCP3 compare register take effect
+     * right away, no shadow buffering. This gives the fastest
+     * response to temperature changes in the 1 Hz main loop.
+     */
+    DL_Timer_setCaptCompUpdateMethod(FAN_PWM_INST,
+        DL_TIMER_CC_UPDATE_METHOD_IMMEDIATE,
+        DL_TIMER_CC_3_INDEX);
+
+    /**
+     * Initial CCP3 compare value = FAN_PWM_PERIOD → ~0% duty.
+     * In edge-aligned down-counting mode, output goes HIGH at
+     * counter = 0 and LOW at counter = CC. With CC = PERIOD
+     * (effectively >= LOAD), the output stays LOW the entire cycle.
+     */
+    DL_Timer_setCaptureCompareValue(FAN_PWM_INST,
+        FAN_PWM_PERIOD, DL_TIMER_CC_3_INDEX);
+
+    /**
+     * Set CCP3 direction to OUTPUT. This is required even though
+     * the pinmux already routes TIMA0_CCP3 to PA8 — the timer
+     * must also be internally configured for output.
+     */
+    DL_Timer_setCCPDirection(FAN_PWM_INST, DL_TIMER_CC3_OUTPUT);
+
+    /**
+     * Enable shadow-load features for safe register updates.
+     */
+    DL_Timer_enableShadowFeatures(FAN_PWM_INST);
+
+    /**
+     * Enable the timer clock. After this, the counter is ready
+     * to start counting.
+     */
+    DL_Timer_enableClock(FAN_PWM_INST);
+
+    /**
+     * Start the timer counter. PWM output is now driven at the
+     * configured duty cycle (initially 0% — fan off).
+     */
+    DL_Timer_startCounter(FAN_PWM_INST);
 }
 
-void Board_Fan_SetDuty(uint8_t percent)
+/**
+ * @brief  Set fan speed by updating the CCP3 PWM compare value.
+ *
+ * In edge-aligned down-counting mode, the PWM output goes HIGH at
+ * counter = 0 and LOW when the counter matches CCP3 on the way down.
+ * duty = (period - CC) / period (without inversion).  Therefore:
+ *   - speedPercent = 0%  → CC = period   (output stays LOW)
+ *   - speedPercent = 100% → CC = 0        (output stays HIGH)
+ *   - speedPercent = X%  → CC = period * (100 - X) / 100
+ *
+ * For 0% speed the timer keeps running with CC = period, ensuring
+ * a clean LOW output (vs. stopping the timer, which may glitch).
+ *
+ * @param[in] speedPercent  Fan speed as a percentage (0 = off, 100 = full).
+ */
+void Board_Fan_SetSpeed(uint8_t speedPercent)
 {
-    if (percent > 100) {
-        percent = 100;
+    uint32_t ccValue;
+
+    if (speedPercent > 100) {
+        speedPercent = 100;
     }
 
-    /*
-     * Edge-aligned PWM duty calculation:
-     *   ccVal = period * duty / 100
-     * For period = 1280, 25% → 320, 50% → 640, etc.
-     * CC0 = period (set by initPWMMode), CC1 controls PA1 output.
+    /**
+     * Map percentage to compare value.
+     *
+     * Edge-aligned down-counting (LOAD = period - 1 = 1279):
+     *   CC = LOAD → 0% duty (match at reload, output stays LOW)
+     *   CC = 0    → 100% duty (HIGH entire cycle)
+     *
+     * Linear interpolation:
+     *   CC = (period - 1) * (100 - speed%) / 100
      */
-    uint32_t ccVal = ((uint32_t)percent * FAN_PWM_PERIOD) / 100u;
-    DL_TimerA_setCaptureCompareValue(FAN_PWM_TIM, ccVal,
-        (DL_TIMER_CC_INDEX)FAN_PWM_CC_INDEX);
+    ccValue = (uint32_t)(FAN_PWM_PERIOD - 1U) * (100UL - speedPercent)
+              / 100UL;
+
+    DL_Timer_setCaptureCompareValue(FAN_PWM_INST,
+        ccValue, DL_TIMER_CC_3_INDEX);
 }

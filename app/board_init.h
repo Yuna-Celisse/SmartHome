@@ -167,6 +167,66 @@ void Board_UART_Write(UART_Regs *uart, uint8_t data);
  */
 void Board_UART_WriteString(UART_Regs *uart, const char *str);
 
+/* ---- Fan PWM: TIMA0 CCP3 on PA8, TB6612 AIN1/AIN2 on PB0/PB1 ---- */
+
+/**
+ * @brief  PWM peripheral instance for fan speed control.
+ *
+ * TIMA0 is an advanced timer with up to 4 CCP channels and dead-band
+ * insertion support. CCP3 drives the TB6612 PWMA input.
+ */
+#define FAN_PWM_INST            TIMA0
+
+/**
+ * @brief  PWM period (ticks) for 25 kHz output at 32 MHz BUSCLK.
+ *
+ * f_pwm = BUSCLK / (prescaler * divideRatio * period)
+ *       32000000 / (1 * 1 * 1280) = 25000 Hz
+ */
+#define FAN_PWM_PERIOD          1280U
+
+/**
+ * @brief  PWM output pin: PA8 = IOMUX PINCM9, function TIMA0_CCP3.
+ */
+#define FAN_PWM_IOMUX           (IOMUX_PINCM9)
+#define FAN_PWM_IOMUX_FUNC      IOMUX_PINCM9_PF_TIMA0_CCP3
+
+/**
+ * @brief  TB6612 AIN1: PB0 = IOMUX PINCM12.
+ *
+ * Set HIGH for forward rotation (together with AIN2 LOW).
+ */
+#define FAN_AIN1_IOMUX          (IOMUX_PINCM12)
+#define FAN_AIN1_PORT           GPIOB
+#define FAN_AIN1_PIN            (1UL << 0)
+
+/**
+ * @brief  TB6612 AIN2: PB1 = IOMUX PINCM13.
+ *
+ * Set LOW for forward rotation (together with AIN1 HIGH).
+ */
+#define FAN_AIN2_IOMUX          (IOMUX_PINCM13)
+#define FAN_AIN2_PORT           GPIOB
+#define FAN_AIN2_PIN            (1UL << 1)
+
+/**
+ * @brief  Initialize fan PWM hardware (TIMA0 CCP3 on PA8) and direction GPIOs.
+ *
+ * Powers on and configures TIMA0 for edge-aligned PWM at 25 kHz.
+ * Configures PB0 (AIN1) and PB1 (AIN2) as digital outputs and sets
+ * forward direction (AIN1=HIGH, AIN2=LOW). The PWM output starts at
+ * 0% duty cycle (fan off) and is driven via Board_Fan_SetSpeed().
+ */
+void Board_Fan_Init(void);
+
+/**
+ * @brief  Set fan speed by adjusting PWM duty cycle.
+ *
+ * @param[in] speedPercent  Fan speed as a percentage (0 = off, 100 = full).
+ *                          Values above 100 are clamped to 100.
+ */
+void Board_Fan_SetSpeed(uint8_t speedPercent);
+
 /* ---- LED: PA0, active low (LOW = ON, HIGH = OFF) ---- */
 #define LED_PORT      GPIO_LED_PORT
 #define LED_PIN       GPIO_LED_USER_LED_PIN
@@ -174,30 +234,5 @@ void Board_UART_WriteString(UART_Regs *uart, const char *str);
 #define LED_ON()      DL_GPIO_clearPins(LED_PORT, LED_PIN)
 #define LED_OFF()     DL_GPIO_setPins(LED_PORT, LED_PIN)
 #define LED_TOGGLE()  DL_GPIO_togglePins(LED_PORT, LED_PIN)
-
-/* ---- TIMA0 PWM on PA1 (fan speed control) ---- */
-#define FAN_PWM_TIM                                 TIMA0
-#define FAN_PWM_CC_INDEX                            DL_TIMERA_CAPTURE_COMPARE_1_INDEX
-#define FAN_PWM_IOMUX                               (IOMUX_PINCM2)
-#define FAN_PWM_IOMUX_FUNC                          IOMUX_PINCM2_PF_TIMA0_CCP1
-#define FAN_PWM_FREQ_HZ                             25000u
-#define FAN_PWM_PERIOD                              1280u   /* 32MHz / 25kHz */
-
-/**
- * @brief  Initialize TIMA0 in edge-aligned PWM mode on PA1.
- *
- * Configures PA1 pinmux to TIMA0_CCP1, resets and powers on
- * the timer peripheral, sets BUSCLK clock source at 32 MHz with
- * no division or prescale, and starts PWM output with 0% duty.
- *
- * Call once during board bring-up, after SYSCFG_DL_init().
- */
-void Board_Fan_Init(void);
-
-/**
- * @brief  Set fan PWM duty cycle on PA1 (TIMA0 CCP1).
- * @param[in] percent  Duty cycle 0–100 (clamped). 0 = off, 100 = full speed.
- */
-void Board_Fan_SetDuty(uint8_t percent);
 
 #endif /* BOARD_INIT_H */

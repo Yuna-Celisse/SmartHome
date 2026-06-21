@@ -5,6 +5,7 @@
 #include "sensors/sensor_bmi160.h"
 #include "sensors/sensor_bme280.h"
 #include "voice_protocol.h"
+#include "fan_control.h"
 
 /**
  * @brief  UART0 interrupt handler — forward RX bytes to ESP8266.
@@ -75,38 +76,6 @@ void UART3_IRQHandler(void)
     }
 }
 
-/**
- * @brief  Convert a signed float to a string with one decimal place.
- *
- * Handles the range -999.9 to +999.9. Zero is formatted as "0.0".
- *
- * @param[in]  value  Float value to format.
- * @param[out] buf    Output buffer, minimum 8 bytes.
- * @return            Pointer to buf.
- */
-static char* float_to_str(float value, char *buf)
-{
-    char *ptr = buf;
-
-    if (value < 0.0f) {
-        *ptr++ = '-';
-        value = -value;
-    }
-    if (value > 999.9f) { value = 999.9f; }
-
-    int int_part = (int)value;
-    int frac_part = (int)((value - (float)int_part) * 10.0f + 0.5f);
-    if (frac_part >= 10) { frac_part = 0; int_part++; }
-
-    if (int_part >= 100) *ptr++ = (char)('0' + int_part / 100);
-    if (int_part >= 10)  *ptr++ = (char)('0' + (int_part / 10) % 10);
-    *ptr++ = (char)('0' + int_part % 10);
-    *ptr++ = '.';
-    *ptr++ = (char)('0' + frac_part);
-    *ptr = '\0';
-    return buf;
-}
-
 /* Simple busy-wait delay (approx. ms at 32MHz CPUCLK) */
 static void delay_ms(uint32_t ms)
 {
@@ -127,6 +96,83 @@ float       g_last_temp            = 25.0f;
 float       g_last_gyro_x          = 0.0f;
 float       g_last_gyro_y          = 0.0f;
 float       g_last_gyro_z          = 0.0f;
+
+/**
+ * @brief  Convert float to a fixed-point decimal string (e.g. "-12.34").
+ *
+ * Writes up to 7 characters + null terminator into buf. The output
+ * always includes one decimal digit. Assumes value fits in [-999, 9999].
+ *
+ * @param[out] buf      Output buffer (at least 8 bytes).
+ * @param[in]  value    Floating-point value to convert.
+ * @param[in]  decimals Number of decimal places (1 .. 4).
+ * @return Pointer to buf (null-terminated).
+ */
+static char *ftoa_fixed(char *buf, float value, uint8_t decimals)
+{
+    uint8_t pos = 0;
+    int32_t whole;
+    uint32_t frac;
+
+    /* Handle negative values */
+    if (value < 0.0f) {
+        buf[pos++] = '-';
+        value = -value;
+    }
+
+    whole = (int32_t)value;
+
+    /* Compute fractional part (scaled by 10^decimals) */
+    {
+        float   scale = 1.0f;
+        uint8_t i;
+        for (i = 0; i < decimals; i++) {
+            scale *= 10.0f;
+        }
+        frac = (uint32_t)((value - (float)whole) * scale + 0.5f);
+        /* Handle rounding overflow (e.g. 0.999 → 1.000) */
+        if (frac >= (uint32_t)scale) {
+            whole++;
+            frac = 0;
+        }
+    }
+
+    /* Print integer part (simple itoa) */
+    {
+        char   tmp[6];
+        uint8_t len = 0;
+        if (whole == 0) {
+            tmp[len++] = '0';
+        } else {
+            int32_t w = whole;
+            while (w > 0) {
+                tmp[len++] = '0' + (uint8_t)(w % 10);
+                w /= 10;
+            }
+        }
+        /* tmp is reversed; write forward into buf */
+        while (len > 0) {
+            buf[pos++] = tmp[--len];
+        }
+    }
+
+    /* Decimal point + fractional part */
+    buf[pos++] = '.';
+    {
+        uint32_t divisor = 1;
+        uint8_t  i;
+        for (i = 0; i < decimals - 1; i++) {
+            divisor *= 10;
+        }
+        for (i = 0; i < decimals; i++) {
+            buf[pos++] = '0' + (uint8_t)((frac / divisor) % 10);
+            divisor /= 10;
+        }
+    }
+
+    buf[pos] = '\0';
+    return buf;
+}
 
 int main(void)
 {
@@ -149,6 +195,13 @@ int main(void)
 
     /* Allow I2C bus and sensors to stabilize */
     Board_Sensor_Init();
+
+    /**
+     * Initialize fan control subsystem (TIMA0 PWM on PA8,
+     * TB6612 direction GPIOs on PB0/PB1). Must be called before
+     * FanControl_Update().
+     */
+    FanControl_Init();
 
     /**
      * Initialize UART0 (PA10/PA11, XDS110 back-channel).
@@ -217,6 +270,7 @@ int main(void)
     uint32_t last_temp_ms     = 0;
     uint32_t last_uart_ms     = 0;
 
+    /* ---- Sensor + Fan Control Loop @ 1 Hz ---- */
     while (1) {
         system_tick += LOOP_DELAY_MS;
 
@@ -275,39 +329,33 @@ int main(void)
             }
         }
 
-        /* ===== BME280: temperature → fan speed @1000ms ===== */
+        /* ===== BME280: temperature reading @1000ms ===== */
         if ((system_tick - last_temp_ms) >= BME280_INTERVAL_MS) {
             last_temp_ms = system_tick;
 
             float temp = BME280_ReadTemperature();
             g_last_temp = temp;
 
-            /* Map temperature to fan level with hysteresis */
-            FanLevel newLevel;
-            uint8_t  newDuty;
+            /**
+             * Feed temperature into the thermostatic fan
+             * controller. FanControl_Update() maps temperature to
+             * PWM duty cycle and drives the TB6612 motor driver.
+             */
+            FanControl_Update(temp);
 
-            if (temp < TEMP_FAN_OFF_THRESHOLD) {
-                newLevel = FAN_OFF;
-                newDuty  = FAN_DUTY_OFF;
-            } else if (temp < TEMP_FAN_LOW_THRESHOLD) {
-                newLevel = FAN_LOW;
-                newDuty  = FAN_DUTY_LOW;
-            } else if (temp < TEMP_FAN_MED_THRESHOLD) {
-                newLevel = FAN_MED;
-                newDuty  = FAN_DUTY_MED;
-            } else if (temp < TEMP_FAN_HIGH_THRESHOLD) {
-                newLevel = FAN_HIGH;
-                newDuty  = FAN_DUTY_HIGH;
+            /* Mirror fan state to global variables for other modules */
+            g_fan_duty  = FanControl_GetSpeed();
+            g_fan_level = (g_fan_duty == 0) ? FAN_OFF
+                         : (g_fan_duty <= FAN_DUTY_LOW)  ? FAN_LOW
+                         : (g_fan_duty <= FAN_DUTY_MED)  ? FAN_MED
+                         : (g_fan_duty <= FAN_DUTY_HIGH) ? FAN_HIGH
+                         : FAN_MAX;
+
+            /* ---- LED follows fan status ---- */
+            if (FanControl_IsRunning()) {
+                LED_ON();
             } else {
-                newLevel = FAN_MAX;
-                newDuty  = FAN_DUTY_MAX;
-            }
-
-            /* Only update PWM when fan level actually changes */
-            if (newLevel != g_fan_level) {
-                g_fan_level = newLevel;
-                g_fan_duty  = newDuty;
-                Board_Fan_SetDuty(newDuty);
+                LED_OFF();
             }
         }
 
@@ -320,7 +368,7 @@ int main(void)
              *   lux\r\n
              */
             char buf_lux[8];
-            float_to_str(g_last_lux, buf_lux);
+            ftoa_fixed(buf_lux, g_last_lux, 1);
 
             char line[16];
             char *p = line;
