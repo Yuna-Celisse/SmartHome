@@ -74,6 +74,9 @@ extern float       g_last_gyro_z;      /**< Last BMI160 Z-axis (°/s) */
 /** Alarm cooldown period before a new alarm can be triggered */
 #define ALARM_COOLDOWN_MS           5000u
 
+/** Buzzer duration — stays active for 10s after trigger */
+#define BUZZER_DURATION_MS          10000u
+
 /* ========== Temperature → fan level thresholds ========== */
 
 /** Below this temperature fan is OFF */

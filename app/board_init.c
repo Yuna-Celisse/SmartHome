@@ -658,3 +658,33 @@ void Board_Fan_SetSpeed(uint8_t speedPercent)
     DL_Timer_setCaptureCompareValue(FAN_PWM_INST,
         ccValue, DL_TIMER_CC_3_INDEX);
 }
+
+/* ---- Buzzer helpers (PB8, active low) ---- */
+
+/**
+ * @brief  Initialize buzzer GPIO (PB8) as digital output, initially off.
+ *
+ * PB8 = IOMUX PINCM25. The buzzer is active LOW, so the pin is set
+ * HIGH during init to keep the buzzer silent.
+ */
+void Board_Buzzer_Init(void)
+{
+    DL_GPIO_initDigitalOutput(BUZZER_IOMUX);
+    DL_GPIO_setPins(BUZZER_PORT, BUZZER_PIN); /* HIGH = off */
+}
+
+/**
+ * @brief  Turn buzzer on — drive PB8 LOW.
+ */
+void Board_Buzzer_On(void)
+{
+    DL_GPIO_clearPins(BUZZER_PORT, BUZZER_PIN);
+}
+
+/**
+ * @brief  Turn buzzer off — drive PB8 HIGH.
+ */
+void Board_Buzzer_Off(void)
+{
+    DL_GPIO_setPins(BUZZER_PORT, BUZZER_PIN);
+}

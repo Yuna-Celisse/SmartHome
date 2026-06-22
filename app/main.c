@@ -239,6 +239,7 @@ int main(void)
     int bme280_ok  = (BME280_Init()  == 0);
     int bmi160_ok  = (BMI160_Init()  == 0);
     Board_Fan_Init();
+    Board_Buzzer_Init();
 
     if (!opt3001_ok || !bme280_ok || !bmi160_ok) {
         while (1) {
@@ -269,6 +270,7 @@ int main(void)
     uint32_t last_light_ms    = 0;
     uint32_t last_temp_ms     = 0;
     uint32_t last_uart_ms     = 0;
+    uint32_t buzzer_start_ms  = 0;
 
     /* ---- Sensor + Fan Control Loop @ 1 Hz ---- */
     while (1) {
@@ -296,6 +298,7 @@ int main(void)
 
                 g_alarm_state       = ALARM_FIRING;
                 g_alarm_cooldown_ms = system_tick;
+                buzzer_start_ms     = system_tick;
             }
         }
 
@@ -381,7 +384,7 @@ int main(void)
             Board_UART_WriteString(UART_DEBUG_INST, line);
         }
 
-        /* ===== LED output state machine (every iteration) ===== */
+        /* ===== LED + Buzzer output state machine (every iteration) ===== */
         if (g_alarm_state == ALARM_FIRING) {
             /*
              * Alarm active: 5Hz blink overrides light state.
@@ -411,6 +414,17 @@ int main(void)
             } else {
                 LED_OFF();
             }
+        }
+
+        /*
+         * Buzzer: active for BUZZER_DURATION_MS (10s) from last
+         * alarm trigger, independent of the 5s alarm cooldown.
+         * A new vibration trigger restarts the 10s timer.
+         */
+        if ((system_tick - buzzer_start_ms) < BUZZER_DURATION_MS) {
+            Board_Buzzer_On();
+        } else {
+            Board_Buzzer_Off();
         }
 
         /* Base loop delay: 10ms per iteration */

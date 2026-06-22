@@ -227,6 +227,26 @@ void Board_Fan_Init(void);
  */
 void Board_Fan_SetSpeed(uint8_t speedPercent);
 
+/* ---- Buzzer: PB8, active low (LOW = ON, HIGH = OFF) ---- */
+#define BUZZER_IOMUX            (IOMUX_PINCM25)
+#define BUZZER_PORT             GPIOB
+#define BUZZER_PIN              (1UL << 8)
+
+/**
+ * @brief  Initialize buzzer GPIO (PB8, active low, initially off).
+ */
+void Board_Buzzer_Init(void);
+
+/**
+ * @brief  Turn buzzer on by driving PB8 LOW.
+ */
+void Board_Buzzer_On(void);
+
+/**
+ * @brief  Turn buzzer off by driving PB8 HIGH.
+ */
+void Board_Buzzer_Off(void);
+
 /* ---- LED: PA0, active low (LOW = ON, HIGH = OFF) ---- */
 #define LED_PORT      GPIO_LED_PORT
 #define LED_PIN       GPIO_LED_USER_LED_PIN
