@@ -483,41 +483,37 @@ uint16_t Board_ADC_Read(void)
     return DL_ADC12_getMemResult(DRV5055_ADC, DRV5055_ADC_MEM_IDX);
 }
 
+/* ---- Simple busy-wait delay ---- */
+
+/**
+ * @brief  Simple busy-wait delay (approximate milliseconds at 32 MHz).
+ */
+void delay_ms(uint32_t ms)
+{
+    uint32_t i;
+    for (i = 0; i < ms; i++) {
+        delay_cycles(32000);
+    }
+}
+
 /* ---- Fan PWM (TB6612) helpers ---- */
 
 /**
- * @brief  Initialize fan PWM hardware: TIMA0 CCP3 on PA8,
- *         direction GPIOs PB0 (AIN1) / PB1 (AIN2).
+ * @brief  Initialize TB6612 direction GPIOs and start the PWM timer.
  *
- * Powers on and configures TIMA0 for edge-aligned PWM at 25 kHz
- * (period = 1280 ticks at 32 MHz BUSCLK). Configures PB0 and PB1
- * as digital outputs for TB6612 direction control (AIN1 = HIGH,
- * AIN2 = LOW = forward). The PWM output starts at 0% duty cycle.
+ * TIMA0 CCP0 PWM on PA8 is configured by SysConfig's
+ * SYSCFG_DL_PWM_FAN_init() — called automatically by SYSCFG_DL_init().
+ * This function:
+ *   1. Configures PB0 (AIN1) and PB1 (AIN2) as digital outputs for
+ *      TB6612 direction control and sets forward rotation
+ *      (AIN1 = HIGH, AIN2 = LOW).
+ *   2. Starts the timer counter. SysConfig leaves the counter stopped
+ *      so that duty cycle can be set before the first PWM cycle.
  *
- * The timer is started and kept running; Board_Fan_SetSpeed()
- * adjusts the CCP3 compare value to control duty cycle in real time.
- *
- * @note  TIMA0 is NOT configured by SysConfig — this function
- *        handles the full peripheral initialization sequence
- *        (reset → power → clock → PWM config → start).
+ * @note  SYSCFG_DL_init() must have been called before this function.
  */
 void Board_Fan_Init(void)
 {
-    /**
-     * Reset and power on TIMA0. These are idempotent and return void.
-     * A short delay allows the peripheral to stabilize after power-on.
-     */
-    DL_Timer_reset(FAN_PWM_INST);
-    DL_Timer_enablePower(FAN_PWM_INST);
-    delay_cycles(32000);
-
-    /**
-     * Configure PA8 as TIMA0 CCP3 (peripheral output — PWM signal).
-     * PA8 = IOMUX PINCM9, alternate function TIMA0_CCP3.
-     */
-    DL_GPIO_initPeripheralOutputFunction(FAN_PWM_IOMUX,
-        FAN_PWM_IOMUX_FUNC);
-
     /**
      * Configure PB0 and PB1 as digital outputs for TB6612 direction
      * control. AIN1 = HIGH + AIN2 = LOW → forward rotation.
@@ -529,101 +525,27 @@ void Board_Fan_Init(void)
     DL_GPIO_clearPins(FAN_AIN2_PORT, FAN_AIN2_PIN);
 
     /**
-     * Clock source: BUSCLK @ 32 MHz, divide ratio 1, prescaler 0.
-     * Effective timer clock = 32 MHz / (1 * (0+1)) = 32 MHz.
+     * Start the timer counter. SysConfig initializes TIMA0 in PWM
+     * mode with the clock enabled but counter stopped (startTimer =
+     * DL_TIMER_STOP). The initial CCP0 compare value is set by
+     * SysConfig to produce 0% duty cycle (fan off).
      */
-    static const DL_Timer_ClockConfig fanClockCfg = {
-        .clockSel    = DL_TIMER_CLOCK_BUSCLK,
-        .divideRatio = DL_TIMER_CLOCK_DIVIDE_1,
-        .prescale    = 0
-    };
-    DL_Timer_setClockConfig(FAN_PWM_INST, &fanClockCfg);
+    DL_TimerA_startCounter(FAN_PWM_INST);
 
     /**
-     * PWM configuration: edge-aligned down-counting mode.
-     *
-     * At 32 MHz timer clock with period = 1280:
-     *   f_pwm = 32,000,000 / 1280 = 25,000 Hz (inaudible range).
-     *
-     * TIMA0 supports 4 CCP channels (isTimerWithFourCC = true).
-     * The timer is not started yet — duty cycle must be set first.
+     * After the counter starts, the SysConfig initial CC value
+     * (1280, which is > LOAD=1279) never matches — the output
+     * would go HIGH on the first zero-event and stay stuck there
+     * (100 % duty).  Force a correct 0 % compare value immediately.
      */
-    static const DL_Timer_PWMConfig fanPwmCfg = {
-        .pwmMode            = DL_TIMER_PWM_MODE_EDGE_ALIGN,
-        .period             = FAN_PWM_PERIOD,
-        .isTimerWithFourCC  = true,
-        .startTimer         = DL_TIMER_STOP
-    };
-    DL_Timer_initPWMMode(FAN_PWM_INST, &fanPwmCfg);
-
-    /**
-     * Counter control: use CCCTL3 for zero, advance, and load
-     * condition selection (matches the CCP3 channel in use).
-     */
-    DL_Timer_setCounterControl(FAN_PWM_INST,
-        DL_TIMER_CZC_CCCTL3_ZCOND,
-        DL_TIMER_CAC_CCCTL3_ACOND,
-        DL_TIMER_CLC_CCCTL3_LCOND);
-
-    /**
-     * CCP3 output control: initial value LOW, no output inversion,
-     * source = function value (PWM compare). When the timer is
-     * stopped, the output goes LOW = 0% duty cycle.
-     */
-    DL_Timer_setCaptureCompareOutCtl(FAN_PWM_INST,
-        DL_TIMER_CC_OCTL_INIT_VAL_LOW,
-        DL_TIMER_CC_OCTL_INV_OUT_DISABLED,
-        DL_TIMER_CC_OCTL_SRC_FUNCVAL,
-        DL_TIMER_CC_3_INDEX);
-
-    /**
-     * Immediate update: writes to CCP3 compare register take effect
-     * right away, no shadow buffering. This gives the fastest
-     * response to temperature changes in the 1 Hz main loop.
-     */
-    DL_Timer_setCaptCompUpdateMethod(FAN_PWM_INST,
-        DL_TIMER_CC_UPDATE_METHOD_IMMEDIATE,
-        DL_TIMER_CC_3_INDEX);
-
-    /**
-     * Initial CCP3 compare value = FAN_PWM_PERIOD → ~0% duty.
-     * In edge-aligned down-counting mode, output goes HIGH at
-     * counter = 0 and LOW at counter = CC. With CC = PERIOD
-     * (effectively >= LOAD), the output stays LOW the entire cycle.
-     */
-    DL_Timer_setCaptureCompareValue(FAN_PWM_INST,
-        FAN_PWM_PERIOD, DL_TIMER_CC_3_INDEX);
-
-    /**
-     * Set CCP3 direction to OUTPUT. This is required even though
-     * the pinmux already routes TIMA0_CCP3 to PA8 — the timer
-     * must also be internally configured for output.
-     */
-    DL_Timer_setCCPDirection(FAN_PWM_INST, DL_TIMER_CC3_OUTPUT);
-
-    /**
-     * Enable shadow-load features for safe register updates.
-     */
-    DL_Timer_enableShadowFeatures(FAN_PWM_INST);
-
-    /**
-     * Enable the timer clock. After this, the counter is ready
-     * to start counting.
-     */
-    DL_Timer_enableClock(FAN_PWM_INST);
-
-    /**
-     * Start the timer counter. PWM output is now driven at the
-     * configured duty cycle (initially 0% — fan off).
-     */
-    DL_Timer_startCounter(FAN_PWM_INST);
+    Board_Fan_SetSpeed(0);
 }
 
 /**
- * @brief  Set fan speed by updating the CCP3 PWM compare value.
+ * @brief  Set fan speed by updating the CCP0 PWM compare value.
  *
  * In edge-aligned down-counting mode, the PWM output goes HIGH at
- * counter = 0 and LOW when the counter matches CCP3 on the way down.
+ * counter = 0 and LOW when the counter matches CCP0 on the way down.
  * duty = (period - CC) / period (without inversion).  Therefore:
  *   - speedPercent = 0%  → CC = period   (output stays LOW)
  *   - speedPercent = 100% → CC = 0        (output stays HIGH)
@@ -645,7 +567,7 @@ void Board_Fan_SetSpeed(uint8_t speedPercent)
     /**
      * Map percentage to compare value.
      *
-     * Edge-aligned down-counting (LOAD = period - 1 = 1279):
+     * Edge-aligned down-counting (LOAD = period - 1):
      *   CC = LOAD → 0% duty (match at reload, output stays LOW)
      *   CC = 0    → 100% duty (HIGH entire cycle)
      *
@@ -655,8 +577,8 @@ void Board_Fan_SetSpeed(uint8_t speedPercent)
     ccValue = (uint32_t)(FAN_PWM_PERIOD - 1U) * (100UL - speedPercent)
               / 100UL;
 
-    DL_Timer_setCaptureCompareValue(FAN_PWM_INST,
-        ccValue, DL_TIMER_CC_3_INDEX);
+    DL_TimerA_setCaptureCompareValue(FAN_PWM_INST,
+        ccValue, DL_TIMERA_CAPTURE_COMPARE_0_INDEX);
 }
 
 /* ---- Buzzer helpers (PB8, active low) ---- */

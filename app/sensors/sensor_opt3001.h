@@ -35,7 +35,7 @@
 #define OPT3001_REG_MANUFACTURER   0x7E
 #define OPT3001_REG_DEVICE_ID      0x7F
 
-/* Configuration value (0xCC10): auto-range, continuous, 100ms, latch */
+/* Configuration value (0xCC10): auto-range, continuous, 800ms, latch */
 #define OPT3001_CONFIG_VALUE_MSB   0xCC
 #define OPT3001_CONFIG_VALUE_LSB   0x10
 

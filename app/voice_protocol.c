@@ -122,6 +122,31 @@ void Voice_Process_Byte(uint8_t ch)
                 LED_OFF();
                 voice_send_packet(type, cmd);
 
+            } else if (cmd >= VOICE_CMD_FAN_OFF
+                       && cmd <= VOICE_CMD_FAN_MAX) {
+                /**
+                 * FAN LEVEL: map command byte directly to
+                 * FanLevel enum (0x10→OFF, 0x11→LOW,
+                 * 0x12→MED, 0x13→HIGH, 0x14→MAX).
+                 * Set global state and switch to MANUAL mode
+                 * so temperature-based auto control does not
+                 * override the voice command.
+                 */
+                g_fan_mode  = FAN_MODE_MANUAL;
+                g_fan_level = (FanLevel)(cmd - VOICE_CMD_FAN_OFF);
+
+                /* Map FanLevel to duty cycle percentage */
+                static const uint8_t dutyMap[] = {
+                    FAN_DUTY_OFF,
+                    FAN_DUTY_LOW,
+                    FAN_DUTY_MED,
+                    FAN_DUTY_HIGH,
+                    FAN_DUTY_MAX
+                };
+                g_fan_duty = dutyMap[g_fan_level];
+
+                voice_send_packet(type, cmd);
+
             } else if (cmd == VOICE_CMD_ALARM) {
                 /**
                  * ALARM: set alarm firing state. The main

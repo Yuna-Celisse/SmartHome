@@ -33,6 +33,11 @@
 /* ---- Command bytes ---- */
 #define VOICE_CMD_LIGHT_ON      0x01   /**< Voice: turn light on  */
 #define VOICE_CMD_LIGHT_OFF     0x02   /**< Voice: turn light off */
+#define VOICE_CMD_FAN_OFF       0x10   /**< Voice: fan off (0%)   */
+#define VOICE_CMD_FAN_LOW       0x11   /**< Voice: fan low (25%)  */
+#define VOICE_CMD_FAN_MED       0x12   /**< Voice: fan med (50%)  */
+#define VOICE_CMD_FAN_HIGH      0x13   /**< Voice: fan high (75%) */
+#define VOICE_CMD_FAN_MAX       0x14   /**< Voice: fan max (100%) */
 #define VOICE_CMD_ALARM         0x26
 #define VOICE_CMD_INIT          0x67
 

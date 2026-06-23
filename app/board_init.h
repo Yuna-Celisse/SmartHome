@@ -167,29 +167,27 @@ void Board_UART_Write(UART_Regs *uart, uint8_t data);
  */
 void Board_UART_WriteString(UART_Regs *uart, const char *str);
 
-/* ---- Fan PWM: TIMA0 CCP3 on PA8, TB6612 AIN1/AIN2 on PB0/PB1 ---- */
+/* ---- Fan PWM: TIMA0 CCP0 on PA8, TB6612 AIN1/AIN2 on PB0/PB1 ---- */
 
 /**
  * @brief  PWM peripheral instance for fan speed control.
  *
- * TIMA0 is an advanced timer with up to 4 CCP channels and dead-band
- * insertion support. CCP3 drives the TB6612 PWMA input.
+ * TIMA0 is an advanced timer with up to 4 CCP channels.
+ * CCP0 drives the TB6612 PWMA input. Configured by SysConfig
+ * (PWM_FAN) — see smart_home.syscfg and ti_msp_dl_config.h.
  */
-#define FAN_PWM_INST            TIMA0
+#define FAN_PWM_INST            PWM_FAN_INST
 
 /**
  * @brief  PWM period (ticks) for 25 kHz output at 32 MHz BUSCLK.
  *
- * f_pwm = BUSCLK / (prescaler * divideRatio * period)
- *       32000000 / (1 * 1 * 1280) = 25000 Hz
+ * f_pwm = BUSCLK / period = 32,000,000 / 1,280 = 25,000 Hz
+ *
+ * Must match PWM1.timerCount = 1280 in smart_home.syscfg.
+ * SysConfig does NOT export the period as a macro — keep this
+ * value in sync manually.
  */
 #define FAN_PWM_PERIOD          1280U
-
-/**
- * @brief  PWM output pin: PA8 = IOMUX PINCM9, function TIMA0_CCP3.
- */
-#define FAN_PWM_IOMUX           (IOMUX_PINCM9)
-#define FAN_PWM_IOMUX_FUNC      IOMUX_PINCM9_PF_TIMA0_CCP3
 
 /**
  * @brief  TB6612 AIN1: PB0 = IOMUX PINCM12.
@@ -210,17 +208,23 @@ void Board_UART_WriteString(UART_Regs *uart, const char *str);
 #define FAN_AIN2_PIN            (1UL << 1)
 
 /**
- * @brief  Initialize fan PWM hardware (TIMA0 CCP3 on PA8) and direction GPIOs.
+ * @brief  Initialize fan PWM hardware (TB6612 direction GPIOs + start timer).
  *
- * Powers on and configures TIMA0 for edge-aligned PWM at 25 kHz.
- * Configures PB0 (AIN1) and PB1 (AIN2) as digital outputs and sets
- * forward direction (AIN1=HIGH, AIN2=LOW). The PWM output starts at
- * 0% duty cycle (fan off) and is driven via Board_Fan_SetSpeed().
+ * TIMA0 CCP0 PWM (PA8) is configured by SysConfig (SYSCFG_DL_PWM_FAN_init).
+ * This function only sets up the TB6612 direction control GPIOs (PB0/PB1)
+ * and starts the timer counter. Call once after SYSCFG_DL_init().
+ *
+ * @note  SYSCFG_DL_init() must be called first — it calls
+ *        SYSCFG_DL_PWM_FAN_init() which configures TIMA0 for PWM mode
+ *        with the timer clock enabled but counter stopped.
  */
 void Board_Fan_Init(void);
 
 /**
- * @brief  Set fan speed by adjusting PWM duty cycle.
+ * @brief  Set fan speed by updating the CCP0 PWM compare value.
+ *
+ * In edge-aligned down-counting mode, the PWM output goes HIGH at
+ * counter = 0 and LOW when the counter matches CCP0 on the way down.
  *
  * @param[in] speedPercent  Fan speed as a percentage (0 = off, 100 = full).
  *                          Values above 100 are clamped to 100.
@@ -254,5 +258,15 @@ void Board_Buzzer_Off(void);
 #define LED_ON()      DL_GPIO_clearPins(LED_PORT, LED_PIN)
 #define LED_OFF()     DL_GPIO_setPins(LED_PORT, LED_PIN)
 #define LED_TOGGLE()  DL_GPIO_togglePins(LED_PORT, LED_PIN)
+
+/**
+ * @brief  Simple busy-wait delay (approximate milliseconds at 32 MHz).
+ *
+ * Uses the DriverLib delay_cycles() primitive. Accuracy is ± a few %
+ * due to compiler optimisation and flash wait states.
+ *
+ * @param[in] ms  Delay duration in milliseconds.
+ */
+void delay_ms(uint32_t ms);
 
 #endif /* BOARD_INIT_H */

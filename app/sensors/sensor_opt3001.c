@@ -24,6 +24,7 @@
 
 #include "sensor_opt3001.h"
 #include "ti_msp_dl_config.h" /* DL_I2C API, delay_cycles */
+#include "../str_utils.h"
 
 /* ---- I2C packet sizes ---- */
 #define OPT_I2C_TX_INIT_SIZE         (3)
@@ -33,7 +34,7 @@
 /* ---- Pre-built I2C packets ---- */
 static const uint8_t opt_config_packet[OPT_I2C_TX_INIT_SIZE] = {
     0x01,                           /* register: CONFIG */
-    OPT3001_CONFIG_VALUE_MSB,       /* 0xCE */
+    OPT3001_CONFIG_VALUE_MSB,       /* 0xCC */
     OPT3001_CONFIG_VALUE_LSB        /* 0x10 */
 };
 
@@ -164,7 +165,57 @@ float OPT3001_ReadLux(void)
 
         /* Valid read — convert to lux */
         uint16_t mantissa = raw & 0x0FFF;
-        return (float)mantissa * (float)(1 << exponent) * 0.01f;
+        float    luxVal  = (float)mantissa
+                         * (float)(1 << exponent) * 0.01f;
+
+#if 0
+        /* ---- Debug: dump raw register to UART0 (disable for production) ---- */
+        {
+            static const char hex[] = "0123456789ABCDEF";
+            uint8_t        j;
+            char           line[48];
+            char          *lp = line;
+            const char    *s;
+
+            s = "[OPT] raw=0x";
+            while (*s) *lp++ = *s++;
+            *lp++ = hex[(rxBuf[0] >> 4) & 0x0F];
+            *lp++ = hex[rxBuf[0] & 0x0F];
+            *lp++ = hex[(rxBuf[1] >> 4) & 0x0F];
+            *lp++ = hex[rxBuf[1] & 0x0F];
+            s = " E=";
+            while (*s) *lp++ = *s++;
+            {
+                uint8_t d = exponent;
+                char    t[3]; uint8_t tp = 0;
+                if (d == 0) { t[tp++] = '0'; }
+                else { while (d) { t[tp++] = '0' + (d % 10); d /= 10; } }
+                while (tp) *lp++ = t[--tp];
+            }
+            s = " R=";
+            while (*s) *lp++ = *s++;
+            {
+                uint16_t d = mantissa;
+                char     t[5]; uint8_t tp = 0;
+                if (d == 0) { t[tp++] = '0'; }
+                else { while (d) { t[tp++] = '0' + (d % 10); d /= 10; } }
+                while (tp) *lp++ = t[--tp];
+            }
+            s = " lux=";
+            while (*s) *lp++ = *s++;
+            {
+                char t[12];
+                ftoa_fixed(t, luxVal, 1);
+                for (j = 0; t[j]; j++) *lp++ = t[j];
+            }
+            *lp++ = '\r';
+            *lp++ = '\n';
+            *lp = '\0';
+            Board_UART_WriteString(UART_DEBUG_INST, line);
+        }
+#endif
+
+        return luxVal;
     }
 
     /* All retries exhausted — return 0.0f as sentinel */

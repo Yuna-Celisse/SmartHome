@@ -21,6 +21,8 @@ const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
 const UART   = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1  = UART.addInstance();
 const UART2  = UART.addInstance();
+const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
+const PWM1   = PWM.addInstance();
 
 /**
  * Write custom configuration values to the imported modules.
@@ -103,6 +105,14 @@ UART2.rxPinConfig.hideOutputInversion  = scripting.forceWrite(false);
 UART2.rxPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 UART2.rxPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
 
+PWM1.$name                      = "PWM_FAN";
+PWM1.clockPrescale              = 1;
+PWM1.timerCount                 = 1280;
+PWM1.peripheral.$assign         = "TIMA0";
+PWM1.peripheral.ccp0Pin.$assign = "PA8";
+PWM1.PWM_CHANNEL_0.$name        = "ti_driverlib_pwm_PWMTimerCC0";
+PWM1.PWM_CHANNEL_0.dutyCycle    = 0;
+
 /**
  * Pinmux solution for unlocked pins/peripherals. This ensures that minor changes to the automatic solver in a future
  * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
@@ -118,3 +128,4 @@ GPIO3.associatedPins[0].pin.$suggestSolution = "PB8";
 SYSCTL.peripheral.$suggestSolution           = "SYSCTL";
 UART1.peripheral.txPin.$suggestSolution      = "PA10";
 UART2.peripheral.$suggestSolution            = "UART1";
+PWM1.peripheral.ccp0Pin.$suggestSolution     = "PA8";

@@ -41,6 +41,12 @@ typedef enum {
     FAN_MAX  = 4    /**< 100 % duty */
 } FanLevel;
 
+/* ========== Fan control mode ========== */
+typedef enum {
+    FAN_MODE_AUTO   = 0,   /**< Temperature-based automatic speed */
+    FAN_MODE_MANUAL = 1    /**< Voice/cloud command holds speed */
+} FanMode;
+
 /* ========== Alarm state ========== */
 typedef enum {
     ALARM_NORMAL = 0,   /**< No alarm active */
@@ -52,6 +58,7 @@ extern LightMode   g_light_mode;       /**< AUTO or MANUAL */
 extern bool        g_light_on;         /**< Current light output state */
 extern FanLevel    g_fan_level;        /**< Current fan speed level */
 extern uint8_t     g_fan_duty;         /**< Current PWM duty 0–100 */
+extern FanMode     g_fan_mode;         /**< AUTO (temp-based) or MANUAL (voice/cloud) */
 extern AlarmState  g_alarm_state;      /**< NORMAL or FIRING */
 extern uint32_t    g_alarm_cooldown_ms;/**< System tick when alarm may re-fire */
 extern float       g_last_lux;         /**< Last valid OPT3001 reading (lux) */
@@ -59,6 +66,9 @@ extern float       g_last_temp;        /**< Last valid BME280 reading (°C) */
 extern float       g_last_gyro_x;      /**< Last BMI160 X-axis (°/s) */
 extern float       g_last_gyro_y;      /**< Last BMI160 Y-axis (°/s) */
 extern float       g_last_gyro_z;      /**< Last BMI160 Z-axis (°/s) */
+extern bool        g_uart0_forward_enabled; /**< UART0→UART1 forwarding switch */
+extern bool        g_esp_connected;    /**< ESP8266 WiFi link active */
+extern bool        g_mqtt_connected;   /**< IoTDA MQTT session active */
 
 /* ========== Threshold constants ========== */
 

@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|---------|------|------|
 | BMI160 | 0x69 | Bosch 6 轴 IMU | ✓ 3 轴陀螺仪 (GYR_NORMAL 模式, ±2000°/s, 16.384 LSB/°/s) |
 | BME280 | 0x77 | Bosch 温湿度/气压 | ✓ 环境温度 (自动探测 0x77/0x76, 影子锁存+重试) |
-| OPT3001 | 0x44 | TI 环境光 | ✓ 照度 (ADDR=GND, 自动量程+连续模式) |
+| OPT3001 | 0x47 | TI 环境光 | ✓ 照度 (ADDR=SCL, 自动量程+连续模式, 800ms) |
 
 **传感器使能引脚**（由 `Board_Sensor_Enable()` 配置）：
 

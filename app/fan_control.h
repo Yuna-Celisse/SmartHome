@@ -70,4 +70,18 @@ uint8_t FanControl_GetSpeed(void);
  */
 bool FanControl_IsRunning(void);
 
+/**
+ * @brief  Directly set the fan PWM duty cycle, bypassing the
+ *         thermostatic temperature mapping.
+ *
+ * Intended for manual / voice-command fan control. Updates the
+ * internal g_fanSpeed and g_fanRunning state, then calls
+ * Board_Fan_SetSpeed() to apply the new duty cycle immediately.
+ * Values above 100 are clamped.
+ *
+ * @param[in] speedPercent  Fan speed as a percentage (0 = off,
+ *                          100 = full).
+ */
+void FanControl_SetSpeed(uint8_t speedPercent);
+
 #endif /* FAN_CONTROL_H */

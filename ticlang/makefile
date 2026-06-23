@@ -16,6 +16,7 @@ SYSCFG_OPT_FILES = $(filter %.opt,$(SYSCFG_FILES))
 
 OBJECTS = main.obj board_init.obj voice_protocol.obj fan_control.obj \
     sensor_opt3001.obj sensor_bmi160.obj sensor_bme280.obj \
+    str_utils.obj json_helper.obj esp8266_at.obj iotda_mqtt.obj \
     $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 NAME = smart_home
 
@@ -99,6 +100,22 @@ voice_protocol.obj: ../app/voice_protocol.c $(SYSCFG_H_FILES)
 	@ $(CC) $(CFLAGS) -c $< -o $@
 
 fan_control.obj: ../app/fan_control.c $(SYSCFG_H_FILES)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+str_utils.obj: ../app/str_utils.c $(SYSCFG_H_FILES)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+json_helper.obj: ../app/json_helper.c $(SYSCFG_H_FILES)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+esp8266_at.obj: ../app/esp8266_at.c $(SYSCFG_H_FILES)
+	@ echo Building $@
+	@ $(CC) $(CFLAGS) -c $< -o $@
+
+iotda_mqtt.obj: ../app/iotda_mqtt.c $(SYSCFG_H_FILES)
 	@ echo Building $@
 	@ $(CC) $(CFLAGS) -c $< -o $@
 

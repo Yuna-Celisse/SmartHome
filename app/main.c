@@ -6,13 +6,18 @@
 #include "sensors/sensor_bme280.h"
 #include "voice_protocol.h"
 #include "fan_control.h"
+#include "str_utils.h"
+#include "esp8266_at.h"
+#include "iotda_mqtt.h"
+#include "cloud_config.h"
 
 /**
  * @brief  UART0 interrupt handler — forward RX bytes to ESP8266.
  *
  * Fires on every received byte (RX FIFO threshold = 1 entry).
- * Each byte is forwarded to UART1 (ESP8266) for AT command processing.
- * No local echo — UART0 TX is reserved for FireWater frames.
+ * When g_uart0_forward_enabled is true, each byte is forwarded to
+ * UART1 (ESP8266) for manual AT command entry.  During cloud
+ * auto-connection the flag is cleared to prevent interference.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
@@ -22,7 +27,9 @@ void UART0_IRQHandler(void)
     case DL_UART_MAIN_IIDX_RX:
         while (!DL_UART_Main_isRXFIFOEmpty(UART0)) {
             uint8_t ch = DL_UART_Main_receiveData(UART0);
-            DL_UART_Main_transmitDataBlocking(UART1, ch);
+            if (g_uart0_forward_enabled) {
+                DL_UART_Main_transmitDataBlocking(UART1, ch);
+            }
         }
         break;
     default:
@@ -31,11 +38,11 @@ void UART0_IRQHandler(void)
 }
 
 /**
- * @brief  UART1 interrupt handler — receive ESP8266 responses.
+ * @brief  UART1 interrupt handler — ESP8266 response reception.
  *
  * Fires on every byte received from the ESP8266 on UART1.
- * Receives and discards — UART0 TX is reserved for FireWater frames.
- * To monitor ESP8266 responses, connect a separate serial adapter to UART1.
+ * Each byte is enqueued into the ESP driver's ring buffer for
+ * non-ISR processing by ESP_PollRx() in the main loop.
  *
  * Interrupt source: DL_UART_MAIN_IIDX_RX (UART RX FIFO threshold event).
  */
@@ -44,7 +51,8 @@ void UART1_IRQHandler(void)
     switch (DL_UART_Main_getPendingInterrupt(UART1)) {
     case DL_UART_MAIN_IIDX_RX:
         while (!DL_UART_Main_isRXFIFOEmpty(UART1)) {
-            (void)DL_UART_Main_receiveData(UART1);
+            uint8_t ch = DL_UART_Main_receiveData(UART1);
+            ESP_ProcessRxByte(ch);
         }
         break;
     default:
@@ -76,19 +84,12 @@ void UART3_IRQHandler(void)
     }
 }
 
-/* Simple busy-wait delay (approx. ms at 32MHz CPUCLK) */
-static void delay_ms(uint32_t ms)
-{
-    for (uint32_t i = 0; i < ms; i++) {
-        delay_cycles(32000);
-    }
-}
-
 /* ========== Global system state ========== */
 LightMode   g_light_mode           = LIGHT_MODE_AUTO;
 bool        g_light_on             = false;
 FanLevel    g_fan_level            = FAN_OFF;
 uint8_t     g_fan_duty             = FAN_DUTY_OFF;
+FanMode     g_fan_mode             = FAN_MODE_AUTO;
 AlarmState  g_alarm_state          = ALARM_NORMAL;
 uint32_t    g_alarm_cooldown_ms    = 0;
 float       g_last_lux             = 0.0f;
@@ -97,82 +98,19 @@ float       g_last_gyro_x          = 0.0f;
 float       g_last_gyro_y          = 0.0f;
 float       g_last_gyro_z          = 0.0f;
 
+/* ========== Cloud communication state ========== */
+
 /**
- * @brief  Convert float to a fixed-point decimal string (e.g. "-12.34").
+ * @brief  Enable / disable UART0→UART1 forwarding.
  *
- * Writes up to 7 characters + null terminator into buf. The output
- * always includes one decimal digit. Assumes value fits in [-999, 9999].
- *
- * @param[out] buf      Output buffer (at least 8 bytes).
- * @param[in]  value    Floating-point value to convert.
- * @param[in]  decimals Number of decimal places (1 .. 4).
- * @return Pointer to buf (null-terminated).
+ * Cleared during the cloud auto-connection sequence to prevent
+ * manual AT commands from interfering with the handshake.
  */
-static char *ftoa_fixed(char *buf, float value, uint8_t decimals)
-{
-    uint8_t pos = 0;
-    int32_t whole;
-    uint32_t frac;
+bool g_uart0_forward_enabled = true;
 
-    /* Handle negative values */
-    if (value < 0.0f) {
-        buf[pos++] = '-';
-        value = -value;
-    }
-
-    whole = (int32_t)value;
-
-    /* Compute fractional part (scaled by 10^decimals) */
-    {
-        float   scale = 1.0f;
-        uint8_t i;
-        for (i = 0; i < decimals; i++) {
-            scale *= 10.0f;
-        }
-        frac = (uint32_t)((value - (float)whole) * scale + 0.5f);
-        /* Handle rounding overflow (e.g. 0.999 → 1.000) */
-        if (frac >= (uint32_t)scale) {
-            whole++;
-            frac = 0;
-        }
-    }
-
-    /* Print integer part (simple itoa) */
-    {
-        char   tmp[6];
-        uint8_t len = 0;
-        if (whole == 0) {
-            tmp[len++] = '0';
-        } else {
-            int32_t w = whole;
-            while (w > 0) {
-                tmp[len++] = '0' + (uint8_t)(w % 10);
-                w /= 10;
-            }
-        }
-        /* tmp is reversed; write forward into buf */
-        while (len > 0) {
-            buf[pos++] = tmp[--len];
-        }
-    }
-
-    /* Decimal point + fractional part */
-    buf[pos++] = '.';
-    {
-        uint32_t divisor = 1;
-        uint8_t  i;
-        for (i = 0; i < decimals - 1; i++) {
-            divisor *= 10;
-        }
-        for (i = 0; i < decimals; i++) {
-            buf[pos++] = '0' + (uint8_t)((frac / divisor) % 10);
-            divisor /= 10;
-        }
-    }
-
-    buf[pos] = '\0';
-    return buf;
-}
+/** True when the ESP8266 is connected to WiFi and IoTDA MQTT. */
+bool g_esp_connected        = false;
+bool g_mqtt_connected       = false;
 
 int main(void)
 {
@@ -231,7 +169,7 @@ int main(void)
     LED_OFF();
 
     /**
-     * Initialize all three sensors and fan PWM.
+     * Initialize all three sensors.
      * If any sensor fails, enter infinite error blink
      * (rapid 100ms on/off on the LED).
      */
@@ -247,6 +185,42 @@ int main(void)
             LED_OFF(); delay_ms(100);
         }
     }
+
+    /**
+     * ===== Cloud connection: ESP8266 → WiFi → IoTDA MQTT =====
+     *
+     * ESP_Init() prepares the UART1 RX ring buffer and response
+     * parser. The connection state machine (IoTDA_Step) runs
+     * in a blocking loop until OPERATIONAL is reached or a
+     * permanent error occurs (~60 s worst case).
+     *
+     * During auto-connection, UART0→UART1 forwarding is
+     * disabled to prevent manual AT commands from interfering.
+     */
+    ESP_Init();
+    g_uart0_forward_enabled = false;
+
+    while (!IoTDA_IsConnected()) {
+        IoTDA_Step();
+        delay_ms(100);
+    }
+
+    /* Connection established — re-enable manual AT forwarding. */
+    g_uart0_forward_enabled = true;
+    g_esp_connected  = true;
+    g_mqtt_connected = true;
+
+    /* Re-initialise light state: MQTT session resume may have
+     * delivered buffered commands that left g_light_on / g_light_mode
+     * in an unexpected state.  Force the auto-light defaults. */
+    g_light_on   = false;
+    g_light_mode = LIGHT_MODE_AUTO;
+
+    /* Quick LED blink to confirm cloud connection */
+    LED_ON();  delay_ms(50);
+    LED_OFF(); delay_ms(50);
+    LED_ON();  delay_ms(50);
+    LED_OFF();
 
     /**
      * Main loop: tick-based cooperative scheduler.
@@ -272,9 +246,33 @@ int main(void)
     uint32_t last_uart_ms     = 0;
     uint32_t buzzer_start_ms  = 0;
 
-    /* ---- Sensor + Fan Control Loop @ 1 Hz ---- */
+    /* ---- Sensor + Fan + Cloud Loop ---- */
     while (1) {
         system_tick += LOOP_DELAY_MS;
+
+        /* ===== Cloud: ESP8266 RX polling (every iteration) ===== */
+        ESP_PollRx();
+        IoTDA_SetTick(system_tick);
+
+        if (!IoTDA_IsConnected()) {
+            /* Connection lost — try to reconnect (blocking in steps,
+             * but each IoTDA_Step() call yields via delay_ms) */
+            g_esp_connected  = false;
+            g_mqtt_connected = false;
+            g_uart0_forward_enabled = false;
+            IoTDA_Step();
+            delay_ms(200);
+        } else {
+            g_uart0_forward_enabled = true;
+
+            /* Dispatch any received MQTT command */
+            if (g_esp_mqtt_data_received) {
+                IoTDA_ProcessCommand();
+            }
+
+            /* Periodic sensor-data report to IoTDA */
+            IoTDA_ReportProperties();
+        }
 
         /* ===== BMI160: gyroscope vibration detection @100ms ===== */
         if ((system_tick - last_gyro_ms) >= BMI160_INTERVAL_MS) {
@@ -302,33 +300,41 @@ int main(void)
             }
         }
 
-        /* ===== OPT3001: ambient light auto-control @800ms ===== */
+        /* ===== OPT3001: ambient light control @100ms ===== */
         if ((system_tick - last_light_ms) >= OPT3001_INTERVAL_MS) {
             last_light_ms = system_tick;
 
             float lux = OPT3001_ReadLux();
             g_last_lux = lux;
 
-            /*
-             * Auto-light control: only applies when mode is AUTO.
-             * Hysteresis prevents flicker near the threshold:
-             *   lux < 50  → turn ON
-             *   lux > 100 → turn OFF
-             *   between   → keep current state
-             *
-             * IMPORTANT: lux == 0.0f is the I2C error sentinel
-             * from OPT3001_ReadLux() (all retries exhausted).
-             * Never use it for auto-light decisions — a bogus
-             * "dark" reading would turn the light on and keep
-             * it on indefinitely.
-             */
             if (g_light_mode == LIGHT_MODE_AUTO && lux > 0.0f) {
+                /**
+                 * AUTO mode: determine light state from ambient
+                 * light level with hysteresis.
+                 *   lux < 50  → turn ON
+                 *   lux > 100 → turn OFF
+                 *   between   → keep current state
+                 */
                 if (lux < LIGHT_ON_THRESHOLD_LUX) {
                     g_light_on = true;
                 } else if (lux > LIGHT_OFF_THRESHOLD_LUX) {
                     g_light_on = false;
                 }
-                /* Between 50 and 100 lux: maintain previous state */
+            }
+            /* In MANUAL mode: g_light_on is held at the value
+             * set by voice / cloud command — do not touch it. */
+
+            /**
+             * Apply light state to the physical LED immediately,
+             * mirroring how the BME280 section applies fan duty
+             * in both AUTO and MANUAL modes.
+             */
+            if (g_alarm_state != ALARM_FIRING) {
+                if (g_light_on) {
+                    LED_ON();
+                } else {
+                    LED_OFF();
+                }
             }
         }
 
@@ -339,43 +345,63 @@ int main(void)
             float temp = BME280_ReadTemperature();
             g_last_temp = temp;
 
-            /**
-             * Feed temperature into the thermostatic fan
-             * controller. FanControl_Update() maps temperature to
-             * PWM duty cycle and drives the TB6612 motor driver.
-             */
-            FanControl_Update(temp);
-
-            /* Mirror fan state to global variables for other modules */
-            g_fan_duty  = FanControl_GetSpeed();
-            g_fan_level = (g_fan_duty == 0) ? FAN_OFF
-                         : (g_fan_duty <= FAN_DUTY_LOW)  ? FAN_LOW
-                         : (g_fan_duty <= FAN_DUTY_MED)  ? FAN_MED
-                         : (g_fan_duty <= FAN_DUTY_HIGH) ? FAN_HIGH
-                         : FAN_MAX;
-
-            /* ---- LED follows fan status ---- */
-            if (FanControl_IsRunning()) {
-                LED_ON();
+            if (g_fan_mode == FAN_MODE_AUTO) {
+                /**
+                 * AUTO mode: thermostatic control via fan_control.c.
+                 * FanControl_Update() implements linear mapping
+                 * (20°C→40°C to 20%→100%) with ±1°C hysteresis.
+                 * Read back the computed speed and map to level.
+                 */
+                FanControl_Update(temp);
+                g_fan_duty = FanControl_GetSpeed();
+                if (g_fan_duty == 0) {
+                    g_fan_level = FAN_OFF;
+                } else if (g_fan_duty <= 25) {
+                    g_fan_level = FAN_LOW;
+                } else if (g_fan_duty <= 50) {
+                    g_fan_level = FAN_MED;
+                } else if (g_fan_duty <= 75) {
+                    g_fan_level = FAN_HIGH;
+                } else {
+                    g_fan_level = FAN_MAX;
+                }
             } else {
-                LED_OFF();
+                /**
+                 * MANUAL mode: apply voice/cloud-set duty.
+                 * Use FanControl_SetSpeed() (not raw
+                 * Board_Fan_SetSpeed) to keep fan_control.c
+                 * internal state synchronised.
+                 */
+                FanControl_SetSpeed(g_fan_duty);
             }
         }
 
-        /* ===== FireWater lux output @1000ms ===== */
+#if 0
+        /* ===== FireWater CSV output @1000ms ===== */
+        /* Disabled: serial port is now used exclusively for ESP8266
+         * AT command debug traces.  Sensor data is reported to the
+         * cloud via MQTT (IoTDA_ReportProperties). */
         if ((system_tick - last_uart_ms) >= FIREWATER_INTERVAL_MS) {
             last_uart_ms = system_tick;
 
             /*
-             * VOFA+ FireWater frame (single channel):
-             *   lux\r\n
+             * VOFA+ FireWater frame (2 channels):
+             *   lux,temp\r\n
              */
             char buf_lux[8];
+            char buf_temp[8];
             ftoa_fixed(buf_lux, g_last_lux, 1);
+            ftoa_fixed(buf_temp, g_last_temp, 1);
 
-            char line[16];
+            char line[32];
             char *p = line;
-            const char *s = buf_lux;
+            const char *s;
+
+            s = buf_lux;
+            while (*s) *p++ = *s++;
+            *p++ = ',';
+
+            s = buf_temp;
             while (*s) *p++ = *s++;
             *p++ = '\r';
             *p++ = '\n';
@@ -383,16 +409,13 @@ int main(void)
 
             Board_UART_WriteString(UART_DEBUG_INST, line);
         }
+#endif
 
         /* ===== LED + Buzzer output state machine (every iteration) ===== */
         if (g_alarm_state == ALARM_FIRING) {
-            /*
-             * Alarm active: 5Hz blink overrides light state.
-             * De-escalate after ALARM_COOLDOWN_MS (5s).
-             */
             if ((system_tick - g_alarm_cooldown_ms)
                 >= ALARM_COOLDOWN_MS) {
-                /* Alarm period expired — restore light state */
+                /* Alarm period expired — restore normal light */
                 g_alarm_state = ALARM_NORMAL;
                 if (g_light_on) {
                     LED_ON();
@@ -400,21 +423,16 @@ int main(void)
                     LED_OFF();
                 }
             } else {
-                /* Still in alarm: 5Hz blink */
+                /* Still in alarm: 5Hz blink overrides light */
                 if (((system_tick / ALARM_BLINK_INTERVAL_MS) & 1u) == 0) {
                     LED_ON();
                 } else {
                     LED_OFF();
                 }
             }
-        } else {
-            /* Normal mode: LED follows g_light_on */
-            if (g_light_on) {
-                LED_ON();
-            } else {
-                LED_OFF();
-            }
         }
+        /* Normal LED state is applied in the OPT3001 section above —
+         * no need to duplicate it here. */
 
         /*
          * Buzzer: active for BUZZER_DURATION_MS (10s) from last

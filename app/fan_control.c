@@ -164,3 +164,24 @@ bool FanControl_IsRunning(void)
 {
     return g_fanRunning;
 }
+
+/**
+ * @brief  Directly set the fan PWM duty cycle.
+ *
+ * Intended for manual / voice-command fan control. Bypasses the
+ * thermostatic temperature mapping. Clamps speedPercent to [0, 100].
+ *
+ * @param[in] speedPercent  Fan speed as a percentage (0 = off,
+ *                          100 = full).
+ */
+void FanControl_SetSpeed(uint8_t speedPercent)
+{
+    if (speedPercent > 100) {
+        speedPercent = 100;
+    }
+
+    g_fanSpeed   = speedPercent;
+    g_fanRunning = (speedPercent > 0);
+
+    Board_Fan_SetSpeed(speedPercent);
+}

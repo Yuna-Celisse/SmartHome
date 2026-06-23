@@ -474,6 +474,51 @@
               <FileType>5</FileType>
               <FilePath>../app/fan_control.h</FilePath>
             </File>
+            <File>
+              <FileName>str_utils.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/str_utils.c</FilePath>
+            </File>
+            <File>
+              <FileName>str_utils.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/str_utils.h</FilePath>
+            </File>
+            <File>
+              <FileName>json_helper.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/json_helper.c</FilePath>
+            </File>
+            <File>
+              <FileName>json_helper.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/json_helper.h</FilePath>
+            </File>
+            <File>
+              <FileName>esp8266_at.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/esp8266_at.c</FilePath>
+            </File>
+            <File>
+              <FileName>esp8266_at.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/esp8266_at.h</FilePath>
+            </File>
+            <File>
+              <FileName>iotda_mqtt.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../app/iotda_mqtt.c</FilePath>
+            </File>
+            <File>
+              <FileName>iotda_mqtt.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/iotda_mqtt.h</FilePath>
+            </File>
+            <File>
+              <FileName>cloud_config.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>../app/cloud_config.h</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>
