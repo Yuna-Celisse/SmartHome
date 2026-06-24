@@ -157,11 +157,11 @@ int main(void)
 
     /**
      * Initialize UART3 (Voice module, PB12/PB13).
+     * Voice_Process_Byte() in the ISR handles 5-byte protocol
+     * parsing — no init broadcast is needed with the new protocol.
      */
     Board_UART3_Init(UART_VOICE_BAUD);
     NVIC_EnableIRQ(UART3_INT_IRQn);
-
-    Voice_Protocol_Init();
 
     /* Power-on LED indication: brief flash */
     LED_ON();

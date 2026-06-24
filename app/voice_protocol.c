@@ -2,7 +2,7 @@
  * @file voice_protocol.c
  *
  * @par dependencies
- *      - board_init.h (Board_UART_Write, LED_TOGGLE, UART_VOICE_INST)
+ *      - board_init.h (Board_UART_Write, LED macros, UART_VOICE_INST)
  *      - voice_protocol.h (this module's interface)
  *
  * @author Yuna-Celisse
@@ -11,13 +11,17 @@
  *
  * Receives raw bytes from the voice UART (UART3), assembles 5-byte
  * packets of the form AA 55 [type] [cmd] FB, and dispatches:
- *   - LIGHT_ON  (0x01): manual mode, LED on, send ack
- *   - LIGHT_OFF (0x02): manual mode, LED off, send ack
- *   - ALARM     (0x26): set alarm firing state, send ack
- *   - Other valid packets: echo the command byte back on the voice UART
+ *   - FAN_OFF   (0x01): manual mode, fan 0%, send ack
+ *   - FAN_L1    (0x02): manual mode, fan 25%, send ack
+ *   - FAN_L2    (0x03): manual mode, fan 50%, send ack
+ *   - FAN_L3    (0x04): manual mode, fan 75%, send ack
+ *   - FAN_L4    (0x05): manual mode, fan 100%, send ack
+ *   - LIGHT_OFF (0x0A): manual mode, LED off, send ack
+ *   - LIGHT_ON  (0x0B): manual mode, LED on, send ack
+ *   - Unknown commands: silently discarded
  *   - Invalid packets (wrong header/footer): silently discarded
  *
- * @version V1.1 2026-6-20
+ * @version V2.0 2026-6-24
  *
  * @note 1 tab == 4 spaces!
  *****************************************************************************/
@@ -41,8 +45,8 @@ static uint8_t g_voice_rx_idx;
  * @brief  Send a 5-byte response packet on the voice UART.
  *
  * Constructs and transmits a complete protocol packet with the
- * given type and command bytes. Used for both the init broadcast
- * and ALARM acknowledgment.
+ * given type and command bytes. Used for acknowledgment responses
+ * to valid voice commands.
  *
  * @param[in] type  Type / source identifier byte.
  * @param[in] cmd   Command byte.
@@ -54,16 +58,6 @@ static void voice_send_packet(uint8_t type, uint8_t cmd)
     Board_UART_Write(UART_VOICE_INST, type);
     Board_UART_Write(UART_VOICE_INST, cmd);
     Board_UART_Write(UART_VOICE_INST, VOICE_PKT_FOOTER);
-}
-
-void Voice_Protocol_Init(void)
-{
-    /**
-     * Send the init broadcast to notify any connected voice
-     * modules that the MCU has powered on and is ready.
-     * Type = 0xFF (broadcast), Cmd = VOICE_CMD_INIT (0x67).
-     */
-    voice_send_packet(0xFF, VOICE_CMD_INIT);
 }
 
 void Voice_Process_Byte(uint8_t ch)
@@ -97,72 +91,59 @@ void Voice_Process_Byte(uint8_t ch)
             uint8_t type = g_voice_rx_buf[2];
             uint8_t cmd  = g_voice_rx_buf[3];
 
-            /**
-             * Dispatch based on command byte.
-             */
-            if (cmd == VOICE_CMD_LIGHT_ON) {
-                /**
-                 * LIGHT ON: set manual mode so auto-light
-                 * does not override, turn LED on, and send
-                 * acknowledgment.
-                 */
-                g_light_mode = LIGHT_MODE_MANUAL;
-                g_light_on   = true;
-                LED_ON();
+            switch (cmd) {
+            case VOICE_CMD_FAN_OFF:
+                g_fan_level = FAN_OFF;
+                g_fan_duty  = 0;
+                g_fan_mode  = FAN_MODE_MANUAL;
                 voice_send_packet(type, cmd);
+                break;
 
-            } else if (cmd == VOICE_CMD_LIGHT_OFF) {
-                /**
-                 * LIGHT OFF: set manual mode so auto-light
-                 * does not override, turn LED off, and send
-                 * acknowledgment.
-                 */
+            case VOICE_CMD_FAN_L1:
+                g_fan_level = FAN_LOW;
+                g_fan_duty  = 25;
+                g_fan_mode  = FAN_MODE_MANUAL;
+                voice_send_packet(type, cmd);
+                break;
+
+            case VOICE_CMD_FAN_L2:
+                g_fan_level = FAN_MED;
+                g_fan_duty  = 50;
+                g_fan_mode  = FAN_MODE_MANUAL;
+                voice_send_packet(type, cmd);
+                break;
+
+            case VOICE_CMD_FAN_L3:
+                g_fan_level = FAN_HIGH;
+                g_fan_duty  = 75;
+                g_fan_mode  = FAN_MODE_MANUAL;
+                voice_send_packet(type, cmd);
+                break;
+
+            case VOICE_CMD_FAN_L4:
+                g_fan_level = FAN_MAX;
+                g_fan_duty  = 100;
+                g_fan_mode  = FAN_MODE_MANUAL;
+                voice_send_packet(type, cmd);
+                break;
+
+            case VOICE_CMD_LIGHT_OFF:
                 g_light_mode = LIGHT_MODE_MANUAL;
                 g_light_on   = false;
                 LED_OFF();
                 voice_send_packet(type, cmd);
+                break;
 
-            } else if (cmd >= VOICE_CMD_FAN_OFF
-                       && cmd <= VOICE_CMD_FAN_MAX) {
-                /**
-                 * FAN LEVEL: map command byte directly to
-                 * FanLevel enum (0x10→OFF, 0x11→LOW,
-                 * 0x12→MED, 0x13→HIGH, 0x14→MAX).
-                 * Set global state and switch to MANUAL mode
-                 * so temperature-based auto control does not
-                 * override the voice command.
-                 */
-                g_fan_mode  = FAN_MODE_MANUAL;
-                g_fan_level = (FanLevel)(cmd - VOICE_CMD_FAN_OFF);
-
-                /* Map FanLevel to duty cycle percentage */
-                static const uint8_t dutyMap[] = {
-                    FAN_DUTY_OFF,
-                    FAN_DUTY_LOW,
-                    FAN_DUTY_MED,
-                    FAN_DUTY_HIGH,
-                    FAN_DUTY_MAX
-                };
-                g_fan_duty = dutyMap[g_fan_level];
-
+            case VOICE_CMD_LIGHT_ON:
+                g_light_mode = LIGHT_MODE_MANUAL;
+                g_light_on   = true;
+                LED_ON();
                 voice_send_packet(type, cmd);
+                break;
 
-            } else if (cmd == VOICE_CMD_ALARM) {
-                /**
-                 * ALARM: set alarm firing state. The main
-                 * loop handles LED blink timing and cooldown.
-                 * Send acknowledgment.
-                 */
-                g_alarm_state = ALARM_FIRING;
-                voice_send_packet(type, cmd);
-
-            } else {
-                /**
-                 * Other recognized commands: echo the
-                 * command byte back on the voice UART
-                 * (single-byte echo, not a full packet).
-                 */
-                Board_UART_Write(UART_VOICE_INST, cmd);
+            default:
+                /* Unknown command — silently discard. */
+                break;
             }
         }
     }
