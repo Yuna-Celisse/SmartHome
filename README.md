@@ -2,9 +2,9 @@
 
 [![ARM GCC Build](https://github.com/Yuna-Celisse/SmartHome/actions/workflows/ticlang-build.yml/badge.svg)](https://github.com/Yuna-Celisse/SmartHome/actions/workflows/ticlang-build.yml)
 
-基于 TI **MSPM0G3507** (Cortex-M0+ @ 32MHz) 的智能电风扇控制系统，运行在 LP-MSPM0G3507 LaunchPad + **BOOSTXL-SENSORS** BoosterPack。
+基于 TI **MSPM0G3507** (Cortex-M0+ @ 32MHz) 的智能电风扇控制系统，运行在 LP-MSPM0G3507 LaunchPad + **BOOSTXL-SENSORS** BoosterPack + **ESP8266 WiFi** 模块。
 
-集成四大功能：**光照自动开灯**、**语音开关灯**、**陀螺仪震荡报警**、**温度传感器调速**。UART0 以 **FireWater 协议** 实时输出 8 通道传感器数据至 VOFA+ 上位机。
+集成五大功能：**光照自动开灯**、**语音开关灯**、**陀螺仪震荡报警**、**温度传感器调速**、**华为云 IoTDA MQTT 远程控制**。UART0 以 **FireWater 协议** 实时输出传感器数据至 VOFA+ 上位机。
 
 ## 产品功能
 
@@ -14,6 +14,7 @@
 | 🎤 **语音开关灯** | 语音模块 (UART3) | 语音命令 0x01/0x02 手动控制灯光，覆盖自动模式 |
 | 🚨 **陀螺仪震荡报警** | BMI160 | 任意轴角速率 > 150°/s 触发 LED 5Hz 闪烁报警（5s 冷却） |
 | 🌡️ **温度传感器调速** | BME280 | 温度 25–35°C 自动映射 5 档风扇 PWM（0%–100%） |
+| ☁️ **华为云远程控制** | ESP8266 + IoTDA MQTT | 手机 APP 远程开关灯/调风速/查状态/重置报警 |
 
 ## 硬件
 
@@ -23,6 +24,7 @@
 | 温湿度 | BME280 | I2C1 | 0x77 | 环境温度 (-40~85°C) |
 | 环境光 | OPT3001 | I2C1 | 0x47 | 照度 (0.01~83000 lux) |
 | 语音模块 | — | UART3 | — | 5 字节协议 (AA 55 [type] [cmd] FB) |
+| WiFi | ESP8266 | UART1 | — | AT 固件 v2.2.0+, MQTT 客户端 |
 
 ### 引脚分配
 
@@ -40,6 +42,7 @@
 | PB13 | UART3 RX → 语音模块 |
 | PA22 | DRV5055 电源使能（低有效） |
 | PA24 | OPT3001 电源使能（高有效） |
+| PB8 | 蜂鸣器输出（高有效） |
 | PB24 | HDC2010 电源使能（低有效，保留） |
 
 ## 语音协议
@@ -94,10 +97,16 @@ VOFA+ 配置：协议 FireWater，通道数 1（lux）。
 ```
 SmartHome/
 ├── app/
-│   ├── main.c                    # Tick 调度器：光照/温度/陀螺仪/报警 + lux FireWater
+│   ├── main.c                    # Tick 调度器：传感器/云端遥测/报警 + FireWater
 │   ├── system_state.h            # 跨模块共享状态（枚举、全局变量、阈值）
-│   ├── board_init.c/h            # I2C/UART/LED/ADC/TIMA0-PWM 底层驱动
+│   ├── board_init.c/h            # I2C/UART/LED/PWM/Buzzer 底层驱动
 │   ├── voice_protocol.c/h        # 语音模块 5 字节协议解析与命令分发
+│   ├── fan_control.c/h           # TB6612 风扇 PWM 恒温控制算法
+│   ├── cloud_config.h            # WiFi/MQTT/设备凭证配置
+│   ├── esp8266_at.c/h            # ESP8266 AT 指令驱动（环形缓冲区+行解析器）
+│   ├── iotda_mqtt.c/h            # 华为云 IoTDA MQTT 状态机
+│   ├── json_helper.c/h           # 手写 JSON 构造器/解析器（无外部库）
+│   ├── str_utils.c/h             # ftoa/str_find/str_parse_uint32 工具函数
 │   └── sensors/
 │       ├── sensor_bmi160.c/h     # BMI160 陀螺仪（raw DL I2C）
 │       ├── sensor_bme280.c/h     # BME280 温度（raw DL I2C）
@@ -116,11 +125,36 @@ SmartHome/
 
 | 任务 | 间隔 | 操作 |
 |------|------|------|
+| IoTDA 属性上报 | ~10s | 3 个 Service（light/fan/alarm）MQTT 遥测 |
+| IoTDA 命令处理 | 每循环 | 处理云端下发的 setFan/setLight/resetAlarm |
 | BMI160 陀螺仪 | 100ms | 读取三轴角速率，超阈值触发报警 |
 | OPT3001 光照 | 800ms | 读取 lux，AUTO 模式下滞回控灯 |
 | BME280 温度 | 1000ms | 读取温度，5 档映射风扇 PWM |
 | FireWater 输出 | 1000ms | 单通道 lux → VOFA+ |
 | LED 状态机 | 10ms | 报警 5Hz 闪烁 / 正常跟随灯光状态 |
+
+## 华为云 IoTDA 远程控制
+
+ESP8266 WiFi 模块通过 UART1 连接 MCU，固件内置 MQTT 客户端连接华为云 IoTDA 平台。
+
+**连接流程**：`ATE0 → CWMODE=1 → CWJAP → MQTTUSERCFG → MQTTCONN → MQTTSUB ×3 → OPERATIONAL`
+
+**远程命令**：
+
+| 命令 | 功能 |
+|------|------|
+| `setFan` | 设置风扇档位 (0–4)，切换至 MANUAL 模式 |
+| `setFanMode` | 切换 AUTO/MANUAL 风扇模式 |
+| `setLight` | 开关灯，切换至 MANUAL 模式 |
+| `resetAlarm` | 清除报警状态 |
+
+**属性遥测**（~10s 上报）：
+
+| Service | 属性 |
+|---------|------|
+| `light` | lux, light_mode, light_on |
+| `fan` | temperature, fan_level, fan_mode |
+| `alarm` | alarm_state, gyro_x, gyro_y, gyro_z |
 
 ### 温度→风扇调速映射
 
