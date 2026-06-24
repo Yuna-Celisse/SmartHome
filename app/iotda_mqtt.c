@@ -85,7 +85,7 @@ bool IoTDA_Step(void)
          * (the module is already awake).
          */
         if (g_retry_count == 0) {
-            delay_ms(3000);
+            ESP_DelayMs(3000);
         }
 
         /* Check firmware version for debugging */
@@ -178,7 +178,7 @@ bool IoTDA_Step(void)
          * the module wasn't ready yet.  A 3-second delay here
          * prevents those races.
          */
-        delay_ms(3000);
+        ESP_DelayMs(3000);
         g_retry_count = 0;
         g_iotda_state = IOTDA_MQTT_USERCFG;
         break;
@@ -243,14 +243,6 @@ bool IoTDA_Step(void)
     case IOTDA_MQTT_CONN:
         /**
          * Connect to IoTDA MQTT broker (plain TCP, port 1883).
-         * Huawei Cloud IoTDA basic edition supports non-TLS MQTT
-         * — the ESP8266 does not need TLS for this.
-         *
-         * Note: AT+MQTTRECV=0,1 is NOT a config command in v2.2.0
-         * firmware — it is a data-read query that returns ERROR
-         * when no data is queued.  The ESP8266 forwards received
-         * MQTT messages as +MQTTSUBRECV unsolicited responses by
-         * default; no explicit enable is needed.
          */
         {
             char cmd[192];
@@ -267,6 +259,17 @@ bool IoTDA_Step(void)
 
             if (ESP_SendAndWait(cmd, MQTT_CONNECT_TIMEOUT_MS)) {
                 g_retry_count = 0;
+
+                /**
+                 * Explicitly enable MQTT active receive mode.
+                 * Needed on v2.3.0.0-dev firmware where the
+                 * default may be passive (polling).  On v2.2.0
+                 * this returns ERROR which is harmless — we
+                 * proceed regardless.
+                 */
+                ESP_SendAndWait("AT+MQTTRECV=0,1",
+                                CMD_RESPONSE_TIMEOUT_MS);
+
                 g_iotda_state = IOTDA_MQTT_SUB;
             } else {
                 g_retry_count++;
@@ -279,23 +282,29 @@ bool IoTDA_Step(void)
 
     case IOTDA_MQTT_SUB:
         /**
-         * Subscribe to cloud command topics.
+         * Subscribe to cloud downlink topics.
          *
-         * Topic 1: messages/down — receives REST device messages
-         *           (setFan, setLight, resetAlarm).
+         * Topic 1: commands/request/+ — receives setFan / setLight /
+         *           resetAlarm / setFanMode commands (wildcard matches
+         *           any requestId).
          * Topic 2: properties/report/response — property-report ack.
+         * Topic 3: messages/down — device messages (async, no response
+         *           required; also subscribed for completeness).
          */
         {
             char cmd[192];
             char *p = cmd;
             const char *s;
 
-            /* Subscribe: device messages downlink */
+            /* Subscribe: device commands (primary control channel).
+             * Huawei IoTDA delivers commands to:
+             *   $oc/devices/{id}/sys/commands/request_id={requestId}
+             * The wildcard '#' matches everything under commands/. */
             s = "AT+MQTTSUB=0,\"$oc/devices/";
             while (*s) *p++ = *s++;
             s = IOTDA_DEVICE_ID;
             while (*s) *p++ = *s++;
-            s = "/sys/messages/down\",1";
+            s = "/sys/commands/#\",1";
             while (*s) *p++ = *s++;
             *p = '\0';
 
@@ -308,6 +317,18 @@ bool IoTDA_Step(void)
             s = IOTDA_DEVICE_ID;
             while (*s) *p++ = *s++;
             s = "/sys/properties/report/response\",1";
+            while (*s) *p++ = *s++;
+            *p = '\0';
+
+            ESP_SendAndWait(cmd, CMD_RESPONSE_TIMEOUT_MS);
+
+            /* Subscribe: device messages (async downlink, secondary) */
+            p = cmd;
+            s = "AT+MQTTSUB=0,\"$oc/devices/";
+            while (*s) *p++ = *s++;
+            s = IOTDA_DEVICE_ID;
+            while (*s) *p++ = *s++;
+            s = "/sys/messages/down\",1";
             while (*s) *p++ = *s++;
             *p = '\0';
 
@@ -342,9 +363,9 @@ bool IoTDA_Step(void)
         {
             /* Blink LED to indicate reconnection attempt */
             LED_OFF();
-            delay_ms(1000);
+            ESP_DelayMs(1000);
             LED_ON();
-            delay_ms(1000);
+            ESP_DelayMs(1000);
             LED_OFF();
 
             g_retry_count = 0;
@@ -437,7 +458,7 @@ void IoTDA_ReportProperties(void)
             firstReport = false;
             Board_UART_WriteString(UART_DEBUG_INST,
                                    "[RPT] pre-publish settle 500ms\r\n");
-            delay_ms(500);
+            ESP_DelayMs(500);
         }
 
         for (si = 0; si < 3; si++) {
@@ -511,7 +532,7 @@ void IoTDA_ReportProperties(void)
              * complete each MQTT transaction before starting the
              * next one. */
             if (si < 2) {
-                delay_ms(500);
+                ESP_DelayMs(500);
             }
         }
     }
@@ -531,7 +552,7 @@ void IoTDA_ProcessCommand(void)
     uint8_t     lightMode  = (uint8_t)g_light_mode;
     uint8_t     fanMode    = (uint8_t)g_fan_mode;
 
-    if (!g_esp_mqtt_data_received) {
+    if (!g_esp_mqtt_pending) {
         return;
     }
 
@@ -601,10 +622,13 @@ void IoTDA_ProcessCommand(void)
         }
     }
 
-    /* Send command response ack */
+    /* Send command response ack — only for synchronous commands
+     * (topics containing "commands/request"), not for async
+     * messages on "messages/down" which are fire-and-forget. */
     {
         const char *topic = ESP_GetMQTTTopic();
-        if (topic && topic[0] != '\0') {
+        if (topic && topic[0] != '\0'
+            && str_find(topic, "commands/request") != 0xFFFF) {
             /**
              * Extract requestId — everything after the last '/'
              * in the topic string.
@@ -641,7 +665,7 @@ void IoTDA_ProcessCommand(void)
      * rather than waiting for the next main-loop iteration. */
     ESP_ConsumeMQTTData();
     ESP_PollRx();
-    if (g_esp_mqtt_data_received) {
+    if (g_esp_mqtt_pending) {
         /**
          * Recursive call: process the next command inline.
          * One level of recursion handles the common case of a
@@ -729,10 +753,10 @@ static bool iotda_publish(const char *topic,
     }
 
     /* Step 1: Send the header */
+    ESP_FlushRx();
     g_esp_ok_received    = false;
     g_esp_error_received = false;
     g_esp_data_prompt    = false;
-    ESP_FlushRx();
 
     Board_UART_WriteString(UART_DEBUG_INST, "[ESP TX] ");
     Board_UART_WriteString(UART_DEBUG_INST, cmd);

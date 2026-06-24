@@ -593,6 +593,7 @@ void Board_Buzzer_Init(void)
 {
     DL_GPIO_initDigitalOutput(BUZZER_IOMUX);
     DL_GPIO_setPins(BUZZER_PORT, BUZZER_PIN); /* HIGH = off */
+    DL_GPIO_enableOutput(BUZZER_PORT, BUZZER_PIN);
 }
 
 /**

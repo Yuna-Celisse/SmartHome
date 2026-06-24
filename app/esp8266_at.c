@@ -125,11 +125,22 @@ typedef enum {
 static char       g_esp_line_buf[ESP_LINE_BUF_SIZE];
 static uint8_t    g_esp_line_pos;
 
-/* MQTT payload tracking */
+/* MQTT payload tracking — dual-slot to prevent overwrite when
+ * two +MQTTSUBRECV messages arrive before the first is consumed. */
 static char       g_esp_payload_buf[ESP_PAYLOAD_BUF_SIZE];
 static char       g_esp_topic_buf[ESP_TOPIC_BUF_SIZE];
 static uint16_t   g_esp_payload_len;      /* Length declared in +MQTTSUBRECV */
 static uint16_t   g_esp_payload_count;    /* Bytes received so far */
+
+/* ---- Slot 1 (secondary) ---- */
+static char       g_esp_payload_buf2[ESP_PAYLOAD_BUF_SIZE];
+static char       g_esp_topic_buf2[ESP_TOPIC_BUF_SIZE];
+static uint16_t   g_esp_payload_len2;
+static uint16_t   g_esp_payload_count2;
+
+/* Active fill slot index (0 or 1) — used by process_line() and
+ * the ESP_RX_PAYLOAD state to know which buffer to write to. */
+static uint8_t    g_esp_fill_slot = 0;
 
 /* Parser state */
 static EspRxState g_esp_rx_state = ESP_RX_IDLE;
@@ -139,12 +150,35 @@ static EspRxState g_esp_rx_state = ESP_RX_IDLE;
 bool g_esp_ok_received;
 bool g_esp_error_received;
 bool g_esp_data_prompt;
-bool g_esp_mqtt_data_received;
+/** Number of unconsumed +MQTTSUBRECV commands (0–2). */
+uint8_t g_esp_mqtt_pending;
 bool g_esp_disconnected;
 
 /* ---- Forward declarations ---- */
 
 static void process_line(const char *line);
+
+/* ---- Delay with RX polling ---- */
+
+/**
+ * @brief  Blocking delay that continuously drains the ESP8266 ring buffer.
+ *
+ * Unlike a plain delay_ms(), this keeps the UART RX ring buffer from
+ * overflowing when the ESP8266 sends unsolicited data (e.g. MQTT
+ * publish acknowledgments, property-report responses, or cloud
+ * commands) during long pauses between AT commands.
+ *
+ * @param[in] ms  Total delay in milliseconds.
+ */
+void ESP_DelayMs(uint32_t ms)
+{
+    while (ms > 0) {
+        uint32_t chunk = (ms > 10U) ? 10U : ms;
+        delay_ms(chunk);
+        ESP_PollRx();
+        ms -= chunk;
+    }
+}
 
 /* ---- Public API ---- */
 
@@ -161,7 +195,11 @@ void ESP_Init(void)
     g_esp_ok_received      = false;
     g_esp_error_received   = false;
     g_esp_data_prompt      = false;
-    g_esp_mqtt_data_received = false;
+    g_esp_mqtt_pending     = 0;
+    g_esp_payload_len2     = 0;
+    g_esp_payload_count2   = 0;
+    g_esp_topic_buf2[0]    = '\0';
+    g_esp_fill_slot        = 0;
     g_esp_disconnected     = false;
 }
 
@@ -248,46 +286,74 @@ void ESP_PollRx(void)
             break;
 
         case ESP_RX_PAYLOAD:
-            if (g_esp_payload_count < g_esp_payload_len
-                && g_esp_payload_count < ESP_PAYLOAD_BUF_SIZE - 1) {
-                g_esp_payload_buf[g_esp_payload_count++] = (char)ch;
+        {
+            /* Select the buffer currently being filled */
+            uint16_t *pCount = (g_esp_fill_slot == 0)
+                                 ? &g_esp_payload_count
+                                 : &g_esp_payload_count2;
+            uint16_t  pLen   = (g_esp_fill_slot == 0)
+                                 ? g_esp_payload_len
+                                 : g_esp_payload_len2;
+            char     *pBuf   = (g_esp_fill_slot == 0)
+                                 ? g_esp_payload_buf
+                                 : g_esp_payload_buf2;
+
+            if (*pCount < pLen
+                && *pCount < ESP_PAYLOAD_BUF_SIZE - 1) {
+                pBuf[(*pCount)++] = (char)ch;
             }
-            if (g_esp_payload_count >= g_esp_payload_len) {
+            if (*pCount >= pLen) {
                 /* Payload complete */
-                g_esp_payload_buf[g_esp_payload_count] = '\0';
-                g_esp_mqtt_data_received = true;
+                pBuf[*pCount] = '\0';
+                g_esp_mqtt_pending++;
+                g_esp_rx_state = ESP_RX_IDLE;
+            } else if (*pCount >= ESP_PAYLOAD_BUF_SIZE - 1) {
+                /**
+                 * Overflow guard: payload length was corrupted
+                 * (likely due to ring-buffer overflow during
+                 * +MQTTSUBRECV line reception).  Force-reset to
+                 * IDLE so the parser can recover on the next
+                 * complete AT response line.
+                 */
                 g_esp_rx_state = ESP_RX_IDLE;
             }
             break;
+        }
         }
     }
 }
 
 /**
- * @brief  Discard all bytes currently in the ring buffer.
+ * @brief  Drain the ring buffer, then discard any remaining bytes.
+ *
+ * Calls ESP_PollRx() first to safely capture any +MQTTSUBRECV
+ * data that arrived since the last poll.  Only then resets the
+ * parser state and flushes the ring buffer.
+ *
+ * This prevents silent data loss when ESP_SendAndWait() is
+ * called while the ESP8266 is sending unsolicited MQTT data.
  */
 void ESP_FlushRx(void)
 {
+    /* Drain and process pending data first — this captures any
+     * +MQTTSUBRECV lines that would otherwise be lost. */
+    ESP_PollRx();
+
     ring_flush();
     g_esp_line_pos      = 0;
     g_esp_rx_state      = ESP_RX_IDLE;
     /**
      * Preserve completed MQTT payload across flush operations.
      *
-     * When an unsolicited +MQTTSUBRECV arrives mid-publish (while
-     * ESP_PollRx is called inside the iotda_publish polling loop),
-     * process_line sets g_esp_payload_len / g_esp_payload_count and
-     * raises g_esp_mqtt_data_received.  The subsequent service's
-     * iotda_publish call would then ESP_FlushRx and zero the length,
-     * causing IoTDA_ProcessCommand to see payloadLen==0 and silently
-     * discard the command.
-     *
-     * Only reset the payload length when there is no complete command
-     * waiting to be consumed.
+     * Only reset payload lengths when there are no complete
+     * commands waiting in either buffer slot.
      */
-    if (!g_esp_mqtt_data_received) {
-        g_esp_payload_len   = 0;
-        g_esp_payload_count = 0;
+    if (g_esp_mqtt_pending == 0) {
+        g_esp_payload_len    = 0;
+        g_esp_payload_count  = 0;
+        g_esp_payload_len2   = 0;
+        g_esp_payload_count2 = 0;
+        g_esp_fill_slot      = 0;
     }
     g_esp_data_prompt   = false;
 }
@@ -297,11 +363,15 @@ void ESP_FlushRx(void)
  */
 bool ESP_SendAndWait(const char *cmd, uint32_t timeoutMs)
 {
-    /* Clear stale flags */
+    /* Drain ring buffer first (captures any pending +MQTTSUBRECV
+     * data before the flush inside ESP_FlushRx clears it). */
+    ESP_FlushRx();
+
+    /* Clear flags AFTER drain — ESP_PollRx() inside ESP_FlushRx()
+     * may have set OK/ERROR from unsolicited MQTT lines. */
     g_esp_ok_received     = false;
     g_esp_error_received  = false;
     g_esp_data_prompt     = false;
-    ESP_FlushRx();
 
     /* Send command */
     /* Echo outgoing command to UART0 for debugging */
@@ -376,14 +446,45 @@ const char *ESP_GetMQTTTopic(void)
 }
 
 /**
- * @brief  Reset the MQTT payload receiver for the next message.
+ * @brief  Consume the current command and shift any queued command forward.
+ *
+ * If a second command was buffered (pending == 2), its data is
+ * moved into slot 0 so the next call to ESP_GetMQTTData() /
+ * ESP_GetMQTTTopic() returns the queued command transparently.
  */
 void ESP_ConsumeMQTTData(void)
 {
-    g_esp_mqtt_data_received = false;
-    g_esp_payload_len        = 0;
-    g_esp_payload_count      = 0;
-    g_esp_topic_buf[0]       = '\0';
+    if (g_esp_mqtt_pending == 0) {
+        return;
+    }
+
+    if (g_esp_mqtt_pending >= 2) {
+        /* Shift slot 1 → slot 0 */
+        uint16_t i;
+        for (i = 0; i < ESP_PAYLOAD_BUF_SIZE; i++) {
+            g_esp_payload_buf[i] = g_esp_payload_buf2[i];
+        }
+        for (i = 0; i < ESP_TOPIC_BUF_SIZE; i++) {
+            g_esp_topic_buf[i] = g_esp_topic_buf2[i];
+        }
+        g_esp_payload_len   = g_esp_payload_len2;
+        g_esp_payload_count = g_esp_payload_count2;
+
+        /* Clear slot 1 */
+        g_esp_payload_len2   = 0;
+        g_esp_payload_count2 = 0;
+        g_esp_topic_buf2[0]  = '\0';
+
+        g_esp_fill_slot      = 1;  /* Next fill goes to slot 1 */
+        g_esp_mqtt_pending   = 1;  /* Slot 0 still has a command */
+    } else {
+        /* Only one pending — clear slot 0 */
+        g_esp_payload_len    = 0;
+        g_esp_payload_count  = 0;
+        g_esp_topic_buf[0]   = '\0';
+        g_esp_fill_slot      = 0;
+        g_esp_mqtt_pending   = 0;
+    }
 }
 
 /* ---- Internal: line processor ---- */
@@ -411,14 +512,10 @@ static void process_line(const char *line)
         /**
          * Format: +MQTTSUBRECV:0,"topic",data_len,<raw bytes>
          *
-         * The raw payload bytes follow the 3rd comma on the SAME
-         * line.  Fields: link_id, topic, data_len, data.
-         *
-         * Extract the topic (first double-quoted string), parse
-         * data_len after the 2nd comma, then copy inline data from
-         * after the 3rd comma.  If the payload is longer than the
-         * remaining line chars, switch to ESP_RX_PAYLOAD to collect
-         * the rest from subsequent ring-buffer bytes.
+         * Dual-slot buffering: if one command is already pending
+         * (g_esp_mqtt_pending >= 1), write to slot 1 instead of
+         * overwriting slot 0.  If both slots are full the new
+         * command is dropped — the cloud will retry.
          */
         uint16_t i;
         uint16_t topicStart = 0;
@@ -427,66 +524,98 @@ static void process_line(const char *line)
         uint16_t dataStart  = 0;
         uint32_t payloadLen = 0;
 
-        for (i = 0; line[i] != '\0'; i++) {
-            if (line[i] == '"' && topicStart == 0) {
-                topicStart = i + 1;
-            } else if (line[i] == '"' && topicStart != 0
-                       && topicEnd == 0) {
-                topicEnd = i;
-            }
-            if (line[i] == ',') {
-                commas++;
-                if (commas == 2) {
-                    /* Parse data_len after 2nd comma */
-                    str_parse_uint32(&line[i + 1], &payloadLen);
-                }
-                if (commas == 3) {
-                    /* Raw data starts after 3rd comma */
-                    dataStart = i + 1;
-                    break;
-                }
-            }
+        /* Guard: if both slots are full, drop the oldest to make
+         * room.  In practice this should not happen under normal
+         * cloud operation (commands are spaced >100ms apart). */
+        if (g_esp_mqtt_pending >= 2) {
+            return;
         }
 
-        /* Copy the topic string */
-        if (topicStart > 0 && topicEnd > topicStart
-            && topicEnd - topicStart < ESP_TOPIC_BUF_SIZE - 1) {
-            uint16_t n = topicEnd - topicStart;
-            uint16_t j;
-            for (j = 0; j < n; j++) {
-                g_esp_topic_buf[j] = line[topicStart + j];
-            }
-            g_esp_topic_buf[n] = '\0';
-        } else {
-            g_esp_topic_buf[0] = '\0';
-        }
+        /* Select the buffer slot to fill */
+        {
+            char     *topicBuf;
+            char     *payloadBuf;
+            uint16_t *pLen;
+            uint16_t *pCount;
 
-        /* Collect payload data */
-        if (payloadLen > 0 && payloadLen <= ESP_PAYLOAD_BUF_SIZE - 1
-            && dataStart > 0) {
-            uint16_t lineRemaining;
-            uint16_t copyLen;
-
-            g_esp_payload_len   = (uint16_t)payloadLen;
-            g_esp_payload_count = 0;
-
-            /* Copy inline portion from this line */
-            lineRemaining = str_len(&line[dataStart]);
-            copyLen = (lineRemaining < (uint16_t)payloadLen)
-                          ? lineRemaining
-                          : (uint16_t)payloadLen;
-            for (i = 0; i < copyLen; i++) {
-                g_esp_payload_buf[i] = line[dataStart + i];
-            }
-            g_esp_payload_count = copyLen;
-
-            if (g_esp_payload_count >= g_esp_payload_len) {
-                /* All data was on this line */
-                g_esp_payload_buf[g_esp_payload_count] = '\0';
-                g_esp_mqtt_data_received = true;
+            if (g_esp_mqtt_pending == 0) {
+                topicBuf   = g_esp_topic_buf;
+                payloadBuf = g_esp_payload_buf;
+                pLen       = &g_esp_payload_len;
+                pCount     = &g_esp_payload_count;
+                g_esp_fill_slot = 0;
             } else {
-                /* More bytes expected — switch to raw mode */
-                g_esp_rx_state = ESP_RX_PAYLOAD;
+                topicBuf   = g_esp_topic_buf2;
+                payloadBuf = g_esp_payload_buf2;
+                pLen       = &g_esp_payload_len2;
+                pCount     = &g_esp_payload_count2;
+                g_esp_fill_slot = 1;
+            }
+
+            for (i = 0; line[i] != '\0'; i++) {
+                if (line[i] == '"' && topicStart == 0) {
+                    topicStart = i + 1;
+                } else if (line[i] == '"' && topicStart != 0
+                           && topicEnd == 0) {
+                    topicEnd = i;
+                }
+                if (line[i] == ',') {
+                    commas++;
+                    if (commas == 2) {
+                        /* Parse data_len after 2nd comma */
+                        str_parse_uint32(&line[i + 1], &payloadLen);
+                    }
+                    if (commas == 3) {
+                        /* Raw data starts after 3rd comma */
+                        dataStart = i + 1;
+                        break;
+                    }
+                }
+            }
+
+            /* Copy the topic string */
+            if (topicStart > 0 && topicEnd > topicStart
+                && topicEnd - topicStart < ESP_TOPIC_BUF_SIZE - 1) {
+                uint16_t n = topicEnd - topicStart;
+                uint16_t j;
+                for (j = 0; j < n; j++) {
+                    topicBuf[j] = line[topicStart + j];
+                }
+                topicBuf[n] = '\0';
+            } else {
+                topicBuf[0] = '\0';
+            }
+
+            /* Collect payload data */
+            if (payloadLen > 0
+                && payloadLen <= ESP_PAYLOAD_BUF_SIZE - 1
+                && dataStart > 0) {
+                uint16_t lineRemaining;
+                uint16_t copyLen;
+
+                *pLen   = (uint16_t)payloadLen;
+                *pCount = 0;
+
+                /* Copy inline portion from this line */
+                lineRemaining = str_len(&line[dataStart]);
+                copyLen = (lineRemaining < (uint16_t)payloadLen)
+                              ? lineRemaining
+                              : (uint16_t)payloadLen;
+                for (i = 0; i < copyLen; i++) {
+                    payloadBuf[i] = line[dataStart + i];
+                }
+                *pCount = copyLen;
+
+                if (*pCount >= *pLen) {
+                    /* All data was on this line */
+                    payloadBuf[*pCount] = '\0';
+                    g_esp_mqtt_pending++;
+                } else {
+                    /* More bytes expected — switch to raw mode.
+                     * g_esp_fill_slot tells ESP_RX_PAYLOAD which
+                     * buffer to continue filling. */
+                    g_esp_rx_state = ESP_RX_PAYLOAD;
+                }
             }
         }
 
@@ -500,8 +629,20 @@ static void process_line(const char *line)
         return;
     }
 
+    /* ---- MQTT publish acknowledgment ---- */
+    /* ESP8266 sends ">+MQTTPUB:OK" or "+MQTTPUB:OK" after a
+     * successful AT+MQTTPUBRAW transaction.  Detect these BEFORE
+     * the exact-match "OK" check below so that the publish
+     * polling loop in iotda_publish() sees g_esp_ok_received. */
+    if (str_find(line, "MQTTPUB:OK") != 0xFFFF) {
+        g_esp_ok_received = true;
+        return;
+    }
+
     /* ---- Success responses ---- */
-    if (str_find(line, "OK") != 0xFFFF) {
+    /* Exact match for "OK" — avoids false positives from lines
+     * that merely contain "OK" as a substring (echoes, data). */
+    if ((line[0] == 'O' && line[1] == 'K' && line[2] == '\0')) {
         g_esp_ok_received = true;
         return;
     }
@@ -515,8 +656,16 @@ static void process_line(const char *line)
     }
 
     /* ---- Error responses ---- */
-    if (str_find(line, "ERROR") != 0xFFFF ||
-        str_find(line, "FAIL") != 0xFFFF) {
+    /* Exact match for "ERROR" */
+    if ((line[0] == 'E' && line[1] == 'R' && line[2] == 'R'
+         && line[3] == 'O' && line[4] == 'R'
+         && line[5] == '\0')) {
+        g_esp_error_received = true;
+        return;
+    }
+    /* "FAIL" is a short line — safe to use substring match but
+     * limit to standalone occurrences */
+    if (str_find(line, "FAIL") != 0xFFFF) {
         g_esp_error_received = true;
         return;
     }

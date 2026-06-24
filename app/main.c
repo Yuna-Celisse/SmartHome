@@ -202,7 +202,7 @@ int main(void)
 
     while (!IoTDA_IsConnected()) {
         IoTDA_Step();
-        delay_ms(100);
+        ESP_DelayMs(100);
     }
 
     /* Connection established — re-enable manual AT forwarding. */
@@ -217,9 +217,9 @@ int main(void)
     g_light_mode = LIGHT_MODE_AUTO;
 
     /* Quick LED blink to confirm cloud connection */
-    LED_ON();  delay_ms(50);
-    LED_OFF(); delay_ms(50);
-    LED_ON();  delay_ms(50);
+    LED_ON();  ESP_DelayMs(50);
+    LED_OFF(); ESP_DelayMs(50);
+    LED_ON();  ESP_DelayMs(50);
     LED_OFF();
 
     /**
@@ -261,12 +261,12 @@ int main(void)
             g_mqtt_connected = false;
             g_uart0_forward_enabled = false;
             IoTDA_Step();
-            delay_ms(200);
+            ESP_DelayMs(200);
         } else {
             g_uart0_forward_enabled = true;
 
             /* Dispatch any received MQTT command */
-            if (g_esp_mqtt_data_received) {
+            if (g_esp_mqtt_pending) {
                 IoTDA_ProcessCommand();
             }
 

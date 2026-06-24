@@ -85,10 +85,12 @@
 
 /**
  * Command subscription topic (wildcard matches any request ID).
- * Receives setFan / setLight / resetAlarm commands.
+ * Huawei IoTDA delivers commands to:
+ *   $oc/devices/{id}/sys/commands/request_id={requestId}
+ * The '#' wildcard matches everything under commands/.
  */
 #define IOTDA_SUB_COMMAND \
-    "$oc/devices/" IOTDA_DEVICE_ID "/sys/commands/request/+"
+    "$oc/devices/" IOTDA_DEVICE_ID "/sys/commands/#"
 
 /**
  * Command response topic prefix.

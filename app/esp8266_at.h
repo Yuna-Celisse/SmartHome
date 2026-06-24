@@ -53,12 +53,24 @@ void ESP_ProcessRxByte(uint8_t ch);
  * Call once per main-loop iteration (every ~10 ms). Non-blocking —
  * processes as many bytes as are currently in the ring buffer.
  * Sets g_esp_ok_received / g_esp_error_received /
- * g_esp_mqtt_data_received flags when a complete response is detected.
+ * g_esp_mqtt_pending flags when a complete response is detected.
  *
  * After calling this function, check those global flags to decide
  * whether to advance the connection state machine.
  */
 void ESP_PollRx(void);
+
+/**
+ * @brief  Blocking delay that continuously drains the ESP8266 RX buffer.
+ *
+ * Use this instead of a plain delay_ms() whenever the ESP8266 may
+ * send unsolicited data (MQTT publish acks, cloud commands, etc.)
+ * during the wait — otherwise the 256-byte ring buffer overflows
+ * and the AT response parser loses synchronisation.
+ *
+ * @param[in] ms  Total delay in milliseconds.
+ */
+void ESP_DelayMs(uint32_t ms);
 
 /**
  * @brief  Discard all bytes currently in the ring buffer.
@@ -133,8 +145,8 @@ extern bool g_esp_error_received;
 /** Set to true when the MQTT publish ">" data prompt is received. */
 extern bool g_esp_data_prompt;
 
-/** Set to true when a complete +MQTTSUBRECV payload has been buffered. */
-extern bool g_esp_mqtt_data_received;
+/** Number of unconsumed +MQTTSUBRECV commands (0–2).  Check with >0. */
+extern uint8_t g_esp_mqtt_pending;
 
 /** Set to true when a "WIFI DISCONNECT" or MQTT "CLOSED" event is seen. */
 extern bool g_esp_disconnected;
