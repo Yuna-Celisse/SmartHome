@@ -244,7 +244,13 @@ int main(void)
     uint32_t last_light_ms    = 0;
     uint32_t last_temp_ms     = 0;
     uint32_t last_uart_ms     = 0;
-    uint32_t buzzer_start_ms  = 0;
+    /**
+     * Buzzer timer reference.  Initialised such that
+     * (system_tick - buzzer_start_ms) >= BUZZER_DURATION_MS
+     * at boot, keeping the buzzer silent until a real
+     * vibration alarm fires.
+     */
+    uint32_t buzzer_start_ms  = (uint32_t)(-BUZZER_DURATION_MS);
 
     /* ---- Sensor + Fan + Cloud Loop ---- */
     while (1) {
